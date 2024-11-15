@@ -73,6 +73,10 @@ make <script>-docker
 
 Sign in to the correct AWS Account via [Seek Auth](https://github.com/SEEK-Jobs/aws-auth-bash)
 
+This will build the docker image and deploy it to an ECR repository. 
+
+_Note: Ensure that the infrastructure used to run the migration task has the same [cpuArchitecture](https://repost.aws/knowledge-center/ecs-task-exec-format-error) as the your system used to build the image._
+
 **Staging**
 
 ```sh
