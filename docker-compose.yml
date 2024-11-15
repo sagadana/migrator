@@ -1,0 +1,23 @@
+version: "3.8"
+name: cnc-db-migrate
+services:
+  mongo-redis:
+    build:
+      context: .
+      dockerfile: Dockerfile.mongo-redis
+    container_name: cnc-db-migrate-mongo-redis
+    working_dir: /app
+    volumes:
+      - ./mongo-redis.go:/app/mongo-redis.go
+      - ./go.mod:/app/go.mod
+      - ./go.sum:/app/go.sum
+    env_file:
+      - .env
+    environment:
+      - MONGO_ADDR=host.docker.internal:27017
+      - REDIS_ADDR=host.docker.internal:6390
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+volumes:
+  mongo-data:
