@@ -24,19 +24,20 @@ The following environment variables are required to run this program:
 
 The following environment variables are required to run this program:
 
-| Variable                | Description                                   |
-| ----------------------- | --------------------------------------------- |
-| `MONGO_DATABASE_NAME`   | Name of the MongoDB database                  |
-| `MONGO_COLLECTION_NAME` | Name of the MongoDB collection                |
-| `MONGO_ADDR`            | Address of the MongoDB server                 |
-| `MONGO_USERNAME`        | Username for MongoDB authentication           |
-| `MONGO_PASSWORD`        | Password for MongoDB authentication           |
-| `REDIS_ADDR`            | Address of the Redis server                   |
-| `REDIS_PASSWORD`        | Password for Redis authentication             |
-| `REDIS_DB`              | Redis database number                         |
-| `PARRALLEL_LOAD`        | Number of parallel loads                      |
-| `BATCH_SIZE`            | Number of documents to load in each batch     |
-| `MAX_SIZE`              | Optional: Maximum number of documents to load |
+| Variable                | Description                                                          |
+| ----------------------- | -------------------------------------------------------------------- |
+| `MONGO_DATABASE_NAME`   | Name of the MongoDB database                                         |
+| `MONGO_COLLECTION_NAME` | Name of the MongoDB collection                                       |
+| `MONGO_ADDR`            | Address of the MongoDB server                                        |
+| `MONGO_USERNAME`        | Username for MongoDB authentication                                  |
+| `MONGO_PASSWORD`        | Password for MongoDB authentication                                  |
+| `REDIS_ADDR`            | Address of the Redis server                                          |
+| `REDIS_PASSWORD`        | Password for Redis authentication                                    |
+| `REDIS_DB`              | Redis database number                                                |
+| `PARRALLEL_LOAD`        | Number of parallel loads                                             |
+| `BATCH_SIZE`            | Number of documents to load in each batch                            |
+| `MAX_SIZE`              | Optional: Maximum number of documents to load                        |
+| `CONTINOUS_REPLICATION` | Optional: Enable continuous replication of new changes. `true/false` |
 
 ## Set Up
 
