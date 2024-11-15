@@ -32,8 +32,10 @@ The following environment variables are required to run this program:
 | `MONGO_USERNAME`        | Username for MongoDB authentication                                  |
 | `MONGO_PASSWORD`        | Password for MongoDB authentication                                  |
 | `REDIS_ADDR`            | Address of the Redis server                                          |
+| `REDIS_USERNAME`        | Username for Redis authentication                                    |
 | `REDIS_PASSWORD`        | Password for Redis authentication                                    |
 | `REDIS_DB`              | Redis database number                                                |
+| `REDIS_CLUSTER`         | Redis is a cluster                                                   |
 | `PARRALLEL_LOAD`        | Number of parallel loads                                             |
 | `BATCH_SIZE`            | Number of documents to load in each batch                            |
 | `MAX_SIZE`              | Optional: Maximum number of documents to load                        |
