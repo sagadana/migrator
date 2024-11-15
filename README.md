@@ -1,8 +1,8 @@
-# Database Migration Scripts
+# Career and Connect (CNC) Database Migration Scripts
 
 ## Description
 
-Collection of Go scripts to migrate data from one database to another.
+Collection of Go scripts to migrate data from one CNC database to another.
 It connects to both databases, retrieves data from the source, transforms it, and then stores it in the destination.
 
 ## Features

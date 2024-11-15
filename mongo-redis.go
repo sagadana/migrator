@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -72,17 +71,16 @@ type SourceResult struct {
 	end    int64
 }
 
-type Hash map[string]interface{}
+type Dict map[string]interface{}
 
 type DestinationData struct {
-	status         bool
-	key            string
-	value          string
-	hash           Hash
-	members        []string
-	score          float64
-	dataType       DataType
-	collectionName string
+	status   bool
+	key      string
+	value    string
+	hash     Dict
+	members  []string
+	score    float64
+	dataType DataType
 }
 
 func parseNumber(data interface{}) float64 {
@@ -139,15 +137,15 @@ func parseArray(data interface{}) []string {
 	}
 }
 
-func parseHash(data interface{}) Hash {
+func parseHash(data interface{}) Dict {
 	if data == nil {
 		return nil
 	}
 	switch data := data.(type) {
-	case Hash:
+	case Dict:
 		return data
 	case bson.M:
-		obj := make(Hash)
+		obj := make(Dict)
 		for k, v := range data {
 			obj[k] = parseString(v)
 		}
@@ -390,8 +388,8 @@ func setMigrationState(rdb *redis.Client, collectionName string, state Migration
 	}
 }
 
-func transformData(collectionName string, doc bson.M) DestinationData {
-	data := DestinationData{status: false, collectionName: collectionName}
+func transformData(doc bson.M) DestinationData {
+	data := DestinationData{status: false}
 
 	key, keyExists := doc["_key"].(string)
 	if !keyExists {
@@ -531,7 +529,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			// Transform data
 			var destData []DestinationData
 			for _, doc := range batchDocs.docs {
-				destData = append(destData, transformData(config.MongoCollection, doc))
+				destData = append(destData, transformData(doc))
 			}
 
 			// Send to destination
