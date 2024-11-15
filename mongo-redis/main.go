@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -28,6 +28,7 @@ type MigrationConfig struct {
 	MongoDatabaseName    string
 	MongoCollection      string
 	RedisAddr            string
+	RedisUsername        string
 	RedisPassword        string
 	RedisDB              int
 	ParrallelLoad        int
@@ -178,18 +179,37 @@ func connectToMongoDB(ctx context.Context, uri string) (*mongo.Client, error) {
 }
 
 // Connect to Redis
-func connectToRedis(addr string, password string, db int) (*redis.Client, error) {
+func connectToRedisCluster(ctx context.Context, addr string, username string, password string, db int) (*redis.ClusterClient, error) {
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:       []string{addr},
+		Username:    username,
+		Password:    password,
+		DialTimeout: 10 * time.Second,
+		NewClient: func(opt *redis.Options) *redis.Client {
+			opt.DB = db
+			return redis.NewClient(opt)
+		},
+	})
+
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Connected to Redis!")
+	return rdb, nil
+}
+
+func connectToRedis(ctx context.Context, addr string, username string, password string, db int) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        addr,
+		Username:    username,
 		Password:    password,
 		DB:          db,
 		DialTimeout: 10 * time.Second,
 	})
 
-	_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := rdb.Ping().Result()
+	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +224,7 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 	// Get a handle for your collection
 	collection := client.Database(mongoDatabaseName).Collection(mongoCollectionName)
 	fmt.Printf("MongoDb Database: %s\n", mongoDatabaseName)
-	fmt.Printf("MongoDb Database: %s\n", mongoCollectionName)
+	fmt.Printf("MongoDb Collection: %s\n", mongoCollectionName)
 
 	// Get the count of documents in a collection
 	if maxSize == 0 {
@@ -313,44 +333,44 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 	return out, maxSize
 }
 
-func sendToRedis(rdb *redis.Client, data []DestinationData) error {
+func sendToRedis(ctx context.Context, rdb *redis.Cmdable, data []DestinationData) error {
 
-	_, pingErr := rdb.Ping().Result()
+	_, pingErr := (*rdb).Ping(ctx).Result()
 	if pingErr != nil {
 		return pingErr
 	}
 
-	pipeline := rdb.Pipeline()
+	pipeline := (*rdb).Pipeline()
 
 	for _, d := range data {
 		key := d.key
 		if d.status {
 			switch d.dataType {
 			case DataSortedSet:
-				pipeline.ZAdd(key, redis.Z{Score: d.score, Member: d.value})
+				pipeline.ZAdd(ctx, key, redis.Z{Score: d.score, Member: d.value})
 			case DataTypeSet:
-				pipeline.SAdd(key, d.value)
+				pipeline.SAdd(ctx, key, d.value)
 			case DataTypeList:
 				if len(d.members) > 0 {
-					pipeline.LPush(key, d.members)
+					pipeline.LPush(ctx, key, d.members)
 				}
 			case DataTypeHash:
 				if len(d.hash) > 0 {
-					pipeline.HMSet(key, d.hash)
+					pipeline.HMSet(ctx, key, d.hash)
 				}
 			case DataTypeString:
 			default:
-				pipeline.Set(key, d.value, 0)
+				pipeline.Set(ctx, key, d.value, 0)
 			}
 		}
 	}
-	_, err := pipeline.Exec()
+	_, err := pipeline.Exec(ctx)
 	return err
 }
 
-func getMigrationState(rdb *redis.Client, collectionName string) MigrationState {
+func getMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName string) MigrationState {
 	key := fmt.Sprintf("%s:%s", DB_MIGRATION_KEY, collectionName)
-	val, err := rdb.HGetAll(key).Result()
+	val, err := (*rdb).HGetAll(ctx, key).Result()
 	if err != nil {
 		log.Printf("Failed to get migration state. Error: %v", err)
 		return MigrationState{Status: MigrationStatusStarting, Offset: "0", Total: "0"}
@@ -373,9 +393,9 @@ func getMigrationState(rdb *redis.Client, collectionName string) MigrationState 
 	return state
 }
 
-func setMigrationState(rdb *redis.Client, collectionName string, state MigrationState, persist bool) {
+func setMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName string, state MigrationState, persist bool) {
 
-	_, err := rdb.Ping().Result()
+	_, err := (*rdb).Ping(ctx).Result()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to connect to Redis. Error: %v", err))
 	}
@@ -392,15 +412,15 @@ func setMigrationState(rdb *redis.Client, collectionName string, state Migration
 		panic(fmt.Sprintf("Failed to unmarshal migration state. Error: %v", err))
 	}
 
-	_, err = rdb.HMSet(key, data).Result()
+	_, err = (*rdb).HMSet(ctx, key, data).Result()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to set migration state. Error: %v. State: %v", err, data))
 	}
 
 	if persist {
-		rdb.Persist(key)
+		(*rdb).Persist(ctx, key)
 	} else {
-		rdb.Expire(key, DB_MIGRATION_EXPIRE_AFTER)
+		(*rdb).Expire(ctx, key, DB_MIGRATION_EXPIRE_AFTER)
 	}
 }
 
@@ -454,28 +474,28 @@ func transformData(doc bson.M) DestinationData {
 	return data
 }
 
-func onExit(rdb *redis.Client, collectionName string) {
-	migragionState := getMigrationState(rdb, collectionName)
+func onExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
+	migragionState := getMigrationState(ctx, rdb, collectionName)
 	if migragionState.Status == MigrationStatusInProgress {
 		migragionState.Status = MigrationStatusFailed
 		migragionState.LastStopedAt = time.Now()
-		setMigrationState(rdb, collectionName, migragionState, true)
+		setMigrationState(ctx, rdb, collectionName, migragionState, true)
 	}
 }
 
-func handleUnexpectedExit(rdb *redis.Client, collectionName string) {
+func handleUnexpectedExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
 	log.Printf("Migration interrupted. Updating status...")
-	onExit(rdb, collectionName)
+	onExit(ctx, rdb, collectionName)
 
 	close(c)
 	os.Exit(0)
 }
 
-func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Client, client *mongo.Client) bool {
+func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
 	if config.ContinousReplication {
 		time.Sleep(DB_MIGRATION_CONTINIOUS_SLEEP_DURATION)
 		return execute(ctx, config, rdb, client)
@@ -483,12 +503,12 @@ func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb
 	return true
 }
 
-func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, client *mongo.Client) bool {
+func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
 
 	start := time.Now()
 
 	// Get migration state
-	migragionState := getMigrationState(rdb, config.MongoCollection)
+	migragionState := getMigrationState(ctx, rdb, config.MongoCollection)
 	previousStatus := migragionState.Status
 	previousStart := migragionState.LastStartedAt
 	previousStop := migragionState.LastStopedAt
@@ -505,7 +525,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 	// Update migration status
 	migragionState.LastStartedAt = start
 	migragionState.Status = MigrationStatusInProgress
-	setMigrationState(rdb, config.MongoCollection, migragionState, false)
+	setMigrationState(ctx, rdb, config.MongoCollection, migragionState, false)
 
 	// Get start offset
 	startOffset := max(previousOffset, config.StartOffset)
@@ -526,7 +546,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 		migragionState.LastDurationMs = previousLastDurationMs
 		migragionState.Offset = json.Number(strconv.FormatInt(previousOffset, 10))
 		migragionState.Total = json.Number(strconv.FormatInt(previousTotal, 10))
-		setMigrationState(rdb, config.MongoCollection, migragionState, true)
+		setMigrationState(ctx, rdb, config.MongoCollection, migragionState, true)
 
 		log.Printf("No documents left to load from collection: %s. Requested Max size: %d \n", config.MongoCollection, config.MaxSize)
 		log.Printf("Time taken: %s\n", elapsed)
@@ -542,7 +562,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 
 	// Update migration total
 	migragionState.Total = json.Number(strconv.FormatInt(total, 10))
-	setMigrationState(rdb, config.MongoCollection, migragionState, false)
+	setMigrationState(ctx, rdb, config.MongoCollection, migragionState, false)
 
 	for batchDocs := range results {
 		if batchDocs.status && batchDocs.docs != nil {
@@ -553,7 +573,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			}
 
 			// Send to destination
-			err := sendToRedis(rdb, destData)
+			err := sendToRedis(ctx, rdb, destData)
 			if err != nil {
 				log.Printf("Failed to load documents: %d to %d. Error: %s\n", batchDocs.start, batchDocs.end, err.Error())
 				status = false
@@ -570,7 +590,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			migragionState.Issue = ""
 			migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
 			migragionState.Offset = json.Number(strconv.FormatInt(offset, 10))
-			setMigrationState(rdb, config.MongoCollection, migragionState, false)
+			setMigrationState(ctx, rdb, config.MongoCollection, migragionState, false)
 
 			log.Printf("Loaded documents: %d to %d = %d/%d = %d/%d (%.2f%%)\n", batchDocs.start, batchDocs.end, count, size, offset, total, float64(count*100/size))
 
@@ -580,7 +600,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			migragionState.Issue = batchDocs.err.Error()
 			migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
 			migragionState.Offset = json.Number(strconv.FormatInt(offset, 10))
-			setMigrationState(rdb, config.MongoCollection, migragionState, true)
+			setMigrationState(ctx, rdb, config.MongoCollection, migragionState, true)
 		}
 	}
 
@@ -590,7 +610,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 		migragionState.Issue = issue
 		migragionState.LastStopedAt = time.Now()
 		migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
-		setMigrationState(rdb, config.MongoCollection, migragionState, true)
+		setMigrationState(ctx, rdb, config.MongoCollection, migragionState, true)
 
 		log.Printf("Failed to load documents. Completed: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 		log.Printf("Time taken: %s\n", elapsed)
@@ -602,7 +622,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 	migragionState.Status = MigrationStatusCompleted
 	migragionState.LastStopedAt = time.Now()
 	migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
-	setMigrationState(rdb, config.MongoCollection, migragionState, true)
+	setMigrationState(ctx, rdb, config.MongoCollection, migragionState, true)
 
 	log.Printf("Completed loading documents: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 	log.Printf("Time taken: %s\n", elapsed)
@@ -627,8 +647,10 @@ func main() {
 	mongoCollectionName := os.Getenv("MONGO_COLLECTION_NAME")
 	mongoURI := fmt.Sprintf("mongodb://%s:%s@%s/%s?retryWrites=false&directConnection=true", os.Getenv("MONGO_USERNAME"), os.Getenv("MONGO_PASSWORD"), os.Getenv("MONGO_ADDR"), mongoDatabaseName)
 	redisAddr := os.Getenv("REDIS_ADDR")
+	redisUsername := os.Getenv("REDIS_USERNAME")
 	redisPassword := os.Getenv("REDIS_PASSWORD")
 	redisDB := int(parseNumber(os.Getenv("REDIS_DB")))
+	redisCluster, _ := strconv.ParseBool(os.Getenv("REDIS_CLUSTER"))
 	parrallelLoad := int(parseNumber(os.Getenv("PARRALLEL_LOAD")))
 	batchSize := int64(parseNumber(os.Getenv("BATCH_SIZE")))
 	maxSize := int64(parseNumber(os.Getenv("MAX_SIZE")))
@@ -663,15 +685,26 @@ func main() {
 	defer client.Disconnect(ctx)
 
 	// Connect to Redis
-	rdb, err := connectToRedis(redisAddr, redisPassword, redisDB)
-	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	var redisClient redis.Cmdable
+	if redisCluster {
+		rdb, err := connectToRedisCluster(ctx, redisAddr, redisUsername, redisPassword, redisDB)
+		if err != nil {
+			log.Fatalf("Failed to connect to Redis Cluster. Error: %v", err)
+		}
+		defer rdb.Close()
+		redisClient = rdb
+	} else {
+		rdb, err := connectToRedis(ctx, redisAddr, redisUsername, redisPassword, redisDB)
+		if err != nil {
+			log.Fatalf("Failed to connect to Redis. Error: %v", err)
+		}
+		defer rdb.Close()
+		redisClient = rdb
 	}
-	defer rdb.Close()
 
-	go handleUnexpectedExit(rdb, mongoCollectionName) // Handle unexpected exits
-	defer onExit(rdb, mongoCollectionName)            // Handle normal exits
+	go handleUnexpectedExit(ctx, &redisClient, mongoCollectionName) // Handle unexpected exits
+	defer onExit(ctx, &redisClient, mongoCollectionName)            // Handle normal exits
 
 	// Execute migration
-	execute(ctx, config, rdb, client)
+	execute(ctx, config, &redisClient, client)
 }
