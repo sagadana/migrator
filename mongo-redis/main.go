@@ -315,9 +315,9 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 
 func sendToRedis(rdb *redis.Client, data []DestinationData) error {
 
-	_, err := rdb.Ping().Result()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to connect to Redis. Error: %v", err))
+	_, pingErr := rdb.Ping().Result()
+	if pingErr != nil {
+		return pingErr
 	}
 
 	pipeline := rdb.Pipeline()
@@ -555,7 +555,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			// Send to destination
 			err := sendToRedis(rdb, destData)
 			if err != nil {
-				log.Printf("Failed to load documents: %d to %d \n", batchDocs.start, batchDocs.end)
+				log.Printf("Failed to load documents: %d to %d. Error: %s\n", batchDocs.start, batchDocs.end, err.Error())
 				status = false
 				issue = err.Error()
 				break
