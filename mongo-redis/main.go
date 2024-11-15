@@ -88,6 +88,10 @@ type DestinationData struct {
 	dataType DataType
 }
 
+func (i Dict) MarshalBinary() ([]byte, error) {
+	return json.Marshal(i)
+}
+
 func parseNumber(data interface{}) float64 {
 	if data == nil {
 		return 0
@@ -356,7 +360,13 @@ func sendToRedis(ctx context.Context, rdb *redis.Cmdable, data []DestinationData
 				}
 			case DataTypeHash:
 				if len(d.hash) > 0 {
-					pipeline.HMSet(ctx, key, d.hash)
+					var dict = make(map[string]interface{})
+					for k, v := range d.hash {
+						if v != nil {
+							dict[k] = v
+						}
+					}
+					pipeline.HMSet(ctx, key, dict)
 				}
 			case DataTypeString:
 			default:
