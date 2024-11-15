@@ -37,7 +37,7 @@ The following environment variables are required to run this program:
 | `PARRALLEL_LOAD`        | Number of parallel loads                                             |
 | `BATCH_SIZE`            | Number of documents to load in each batch                            |
 | `MAX_SIZE`              | Optional: Maximum number of documents to load                        |
-| `START_OFFSET`          | Optional: Offset to start migration from                             |
+| `START_OFFSET`          | Optional: Minimum offset to start migration from                     |
 | `CONTINOUS_REPLICATION` | Optional: Enable continuous replication of new changes. `true/false` |
 
 ## Set Up
