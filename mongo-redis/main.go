@@ -314,6 +314,12 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 }
 
 func sendToRedis(rdb *redis.Client, data []DestinationData) error {
+
+	_, err := rdb.Ping().Result()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to connect to Redis. Error: %v", err))
+	}
+
 	pipeline := rdb.Pipeline()
 
 	for _, d := range data {
@@ -368,6 +374,12 @@ func getMigrationState(rdb *redis.Client, collectionName string) MigrationState 
 }
 
 func setMigrationState(rdb *redis.Client, collectionName string, state MigrationState, persist bool) {
+
+	_, err := rdb.Ping().Result()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to connect to Redis. Error: %v", err))
+	}
+
 	key := fmt.Sprintf("%s:%s", DB_MIGRATION_KEY, collectionName)
 	value, err := json.Marshal(state)
 	if err != nil {
