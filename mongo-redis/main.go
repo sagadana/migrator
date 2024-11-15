@@ -43,10 +43,12 @@ const (
 	MigrationStatusInProgress MigrationStatusType = "in_progress"
 	MigrationStatusCompleted  MigrationStatusType = "completed"
 	MigrationStatusFailed     MigrationStatusType = "failed"
+	MigrationStatusPaused     MigrationStatusType = "paused"
 )
 
 type MigrationState struct {
 	Status         MigrationStatusType `json:"status"`
+	Issue          string              `json:"issue"`
 	Total          json.Number         `json:"total"`
 	Offset         json.Number         `json:"offset"`
 	LastStartedAt  time.Time           `json:"started_at"`
@@ -66,6 +68,7 @@ const (
 
 type SourceResult struct {
 	status bool
+	err    error
 	docs   []bson.M
 	start  int64
 	end    int64
@@ -271,13 +274,12 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 					cursor, err := collection.Find(ctx, bson.M{}, findOptions)
 					if err != nil {
 						log.Printf("Worker %d: Failed to find docs in collection: %v", id, err)
-						results <- SourceResult{status: false, docs: nil, start: skip, end: skip + chunkBatchSize}
+						results <- SourceResult{status: false, err: err, docs: nil, start: skip, end: skip + chunkBatchSize}
 						continue
 					}
 
 					var batchDocs []bson.M
 					for cursor.Next(ctx) {
-
 						var doc bson.M
 						if err = cursor.Decode(&doc); err != nil {
 							log.Printf("Worker %d: Failed to decode doc: %v", id, err)
@@ -516,6 +518,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 	}
 
 	var status bool = true
+	var issue string = ""
 	var count int64 = 0
 	var offset int64 = previousOffset
 	var total int64 = size + previousOffset
@@ -537,6 +540,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 			if err != nil {
 				log.Printf("Failed to load documents: %d to %d \n", batchDocs.start, batchDocs.end)
 				status = false
+				issue = err.Error()
 				break
 			}
 
@@ -545,17 +549,28 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 
 			// Update migration amount loaded
 			elapsed := time.Since(start)
+			migragionState.Status = MigrationStatusInProgress
+			migragionState.Issue = ""
 			migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
 			migragionState.Offset = json.Number(strconv.FormatInt(offset, 10))
 			setMigrationState(rdb, config.MongoCollection, migragionState, false)
 
 			log.Printf("Loaded documents: %d to %d = %d/%d = %d/%d (%.2f%%)\n", batchDocs.start, batchDocs.end, count, size, offset, total, float64(count*100/size))
+
+		} else if batchDocs.err != nil {
+			elapsed := time.Since(start)
+			migragionState.Status = MigrationStatusPaused
+			migragionState.Issue = batchDocs.err.Error()
+			migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
+			migragionState.Offset = json.Number(strconv.FormatInt(offset, 10))
+			setMigrationState(rdb, config.MongoCollection, migragionState, true)
 		}
 	}
 
 	if !status {
 		elapsed := time.Since(start)
 		migragionState.Status = MigrationStatusFailed
+		migragionState.Issue = issue
 		migragionState.LastStopedAt = time.Now()
 		migragionState.LastDurationMs = json.Number(strconv.FormatInt(elapsed.Milliseconds(), 10))
 		setMigrationState(rdb, config.MongoCollection, migragionState, true)
