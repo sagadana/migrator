@@ -33,6 +33,7 @@ type MigrationConfig struct {
 	ParrallelLoad        int
 	BatchSize            int64
 	MaxSize              int64
+	StartOffset          int64
 	ContinousReplication bool
 }
 
@@ -493,12 +494,15 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Client, cli
 	migragionState.Status = MigrationStatusInProgress
 	setMigrationState(rdb, config.MongoCollection, migragionState, false)
 
+	// Get start offset
+	startOffset := max(previousOffset, config.StartOffset)
+
 	// Load data from Source
 	fmt.Print("\n--- Migrating data from MongoDB to Redis --- \n\n")
 	results, size := generateMongoDBSourceData(ctx, client,
 		config.MongoDatabaseName,
 		config.MongoCollection, config.ParrallelLoad,
-		int64(config.BatchSize), int64(config.MaxSize), previousOffset)
+		int64(config.BatchSize), int64(config.MaxSize), startOffset)
 
 	// Check if there are no documents to load
 	if size <= 0 {
@@ -615,6 +619,7 @@ func main() {
 	parrallelLoad := int(parseNumber(os.Getenv("PARRALLEL_LOAD")))
 	batchSize := int64(parseNumber(os.Getenv("BATCH_SIZE")))
 	maxSize := int64(parseNumber(os.Getenv("MAX_SIZE")))
+	startOffset := int64(parseNumber(os.Getenv("START_OFFSET")))
 	continousReplication, _ := strconv.ParseBool(os.Getenv("CONTINOUS_REPLICATION"))
 
 	println("Environment: ", enviroment)
@@ -630,6 +635,7 @@ func main() {
 		ParrallelLoad:        parrallelLoad,
 		BatchSize:            batchSize,
 		MaxSize:              maxSize,
+		StartOffset:          startOffset,
 		ContinousReplication: continousReplication,
 	}
 

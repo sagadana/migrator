@@ -37,6 +37,7 @@ The following environment variables are required to run this program:
 | `PARRALLEL_LOAD`        | Number of parallel loads                                             |
 | `BATCH_SIZE`            | Number of documents to load in each batch                            |
 | `MAX_SIZE`              | Optional: Maximum number of documents to load                        |
+| `START_OFFSET`          | Optional: Offset to start migration from                             |
 | `CONTINOUS_REPLICATION` | Optional: Enable continuous replication of new changes. `true/false` |
 
 ## Set Up
@@ -73,7 +74,7 @@ make <script>-docker
 
 Sign in to the correct AWS Account via [Seek Auth](https://github.com/SEEK-Jobs/aws-auth-bash)
 
-This will build the docker image and deploy it to an ECR repository. 
+This will build the docker image and deploy it to an ECR repository.
 
 _Note: Ensure that the infrastructure used to run the migration task has the same [cpuArchitecture](https://repost.aws/knowledge-center/ecs-task-exec-format-error) as the your system used to build the image._
 
