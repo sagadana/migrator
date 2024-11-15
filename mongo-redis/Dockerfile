@@ -1,11 +1,11 @@
 FROM golang:bullseye
 WORKDIR /app
 
-COPY go.mod go.sum mongo-redis.go /app/
+COPY . /app/
 
 RUN go mod download
 
 # Compile the application
-RUN go build -o cnc-db-migrate-mongo-redis mongo-redis.go
+RUN go build -o cnc-db-migrate-mongo-redis .
 
 CMD ["./cnc-db-migrate-mongo-redis"]

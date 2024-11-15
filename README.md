@@ -16,9 +16,9 @@ It connects to both databases, retrieves data from the source, transforms it, an
 
 The following environment variables are required to run this program:
 
-| Script                          | Description                   |
-| ------------------------------- | ----------------------------- |
-| [mongo-redis](./mongo-redis.go) | Migrate from MongoDB to Redis |
+| Script                       | Description                                 |
+| ---------------------------- | ------------------------------------------- |
+| [mongo-redis](./mongo-redis) | Migrate from CNC DocumentDB(Mongo) to Redis |
 
 ## Environment Variables
 
@@ -41,18 +41,17 @@ The following environment variables are required to run this program:
 
 ## Set Up
 
-Follow these steps to set up the Go application:
+Install `make`
 
-1. **Install Go:**
-   Download and install Go from the official website: [https://golang.org/dl/](https://golang.org/dl/)
+```sh
+brew install make
+```
 
-2. **Install the packages:**
-   Navigate to the project directory and run the following command to install the required packages:
-   ```sh
-   go get ./...
-   ```
-3. **Set up the .env file:**
-   Create a `.env` file in the project directory and populate it with the required environment variables as shown in the `.env.example` file.
+Run install command for each migration script
+
+```sh
+make install-<script>
+```
 
 ## Run
 
@@ -61,11 +60,21 @@ To execute the program, run the following command in the project directory:
 **Dev**
 
 ```sh
-go run <script>.go
+make <script>-dev
 ```
 
 **Docker**
 
 ```sh
-docker build  -f Dockerfile.<script>  -t migrate-<script> . && docker run -it migrate-<script> -e <env_nanme_1>=<env_value_2> -e <env_name_n..>=<env_value_2..>
+make <script>-docker
+```
+
+## Deploy
+
+Sign in to the correct AWS Account via [Seek Auth](https://github.com/SEEK-Jobs/aws-auth-bash)
+
+**Staging**
+
+```sh
+make <script>-stag
 ```
