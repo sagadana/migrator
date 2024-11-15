@@ -346,6 +346,7 @@ func getMigrationState(rdb *redis.Client, collectionName string) MigrationState 
 	key := fmt.Sprintf("%s:%s", DB_MIGRATION_KEY, collectionName)
 	val, err := rdb.HGetAll(key).Result()
 	if err != nil {
+		log.Printf("Failed to get migration state. Error: %v", err)
 		return MigrationState{Status: MigrationStatusStarting, Offset: "0", Total: "0"}
 	}
 	if len(val) == 0 {
@@ -355,12 +356,12 @@ func getMigrationState(rdb *redis.Client, collectionName string) MigrationState 
 	var state MigrationState
 	value, err := json.Marshal(val)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to marshal migration state: %v", err))
+		panic(fmt.Sprintf("Failed to marshal migration state. Error: %v", err))
 	}
 
 	err = json.Unmarshal([]byte(value), &state)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to unmarshal migration state: %v", err))
+		panic(fmt.Sprintf("Failed to unmarshal migration state. Error: %v", err))
 	}
 
 	return state
@@ -370,18 +371,18 @@ func setMigrationState(rdb *redis.Client, collectionName string, state Migration
 	key := fmt.Sprintf("%s:%s", DB_MIGRATION_KEY, collectionName)
 	value, err := json.Marshal(state)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to marshal migration state: %v", err))
+		panic(fmt.Sprintf("Failed to marshal migration state. Error: %v", err))
 	}
 
 	var data = make(map[string]interface{})
 	err = json.Unmarshal([]byte(value), &data)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to unmarshal migration state: %v", err))
+		panic(fmt.Sprintf("Failed to unmarshal migration state. Error: %v", err))
 	}
 
 	_, err = rdb.HMSet(key, data).Result()
 	if err != nil {
-		panic(fmt.Sprintf("Failed to set migration state: %v", err))
+		panic(fmt.Sprintf("Failed to set migration state. Error: %v. State: %v", err, data))
 	}
 
 	if persist {
