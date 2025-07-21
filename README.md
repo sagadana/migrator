@@ -1,15 +1,15 @@
-# Career and Connect (CNC) Database Migration Scripts
+# Database Migration Scripts
 
 ## Description
 
-Collection of Go scripts to migrate data from one CNC database to another.
+Collection of Go scripts to migrate data from one database to another.
 It connects to both databases, retrieves data from the source, transforms it, and then stores it in the destination.
 
 ## Features
 
 - Schema transformation
-- Parrallel Loading: Break data into chunks and load in parrallel
-- Auto Resuming: Resume from last success postion if failed
+- Parallel Loading: Break data into chunks and load in parallel
+- Auto Resuming: Resume from last success position if failed
 - Continuous Replication: Recursively check for new changes and replicate them
 
 ## Scripts
@@ -18,7 +18,7 @@ The following environment variables are required to run this program:
 
 | Script                       | Description                                 |
 | ---------------------------- | ------------------------------------------- |
-| [mongo-redis](./mongo-redis) | Migrate from CNC DocumentDB(Mongo) to Redis |
+| [mongo-redis](./mongo-redis) | Migrate from DocumentDB(Mongo) to Redis |
 
 ## Environment Variables
 
