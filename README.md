@@ -10,7 +10,7 @@ It connects to both databases, retrieves data from the source, transforms it, an
 - Schema transformation
 - Parallel Loading: Break data into chunks and load in parallel
 - Auto Resuming: Resume from last success position if failed
-- Continuous Replication: Recursively check for new changes and replicate them
+- Continuous Replication: Recursively check for new changes and replicate them (TODO: Use Change Stream)
 
 ## Scripts
 
@@ -33,7 +33,7 @@ The following environment variables are required to run this program:
 | `MONGO_PASSWORD`        | Password for MongoDB authentication                                  |
 | `REDIS_ADDR`            | Address of the Redis server                                          |
 | `REDIS_USERNAME`        | Username for Redis authentication                                    |
-| `REDIS_PASSWORD`        | Password for Redis authentication                                    |
+| `REDIS_PASSWORD`        | Optional: Password for Redis authentication                          |
 | `REDIS_DB`              | Redis database number                                                |
 | `REDIS_CLUSTER`         | Redis is a cluster                                                   |
 | `PARRALLEL_LOAD`        | Number of parallel loads                                             |
