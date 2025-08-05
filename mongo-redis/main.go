@@ -24,13 +24,19 @@ const DB_MIGRATION_EXPIRE_AFTER time.Duration = 10 * time.Minute             // 
 const DB_MIGRATION_CONTINIOUS_SLEEP_DURATION time.Duration = 5 * time.Second // Replicate migration every X seconds
 
 type MigrationConfig struct {
-	MongoURI             string
-	MongoDatabaseName    string
-	MongoCollection      string
-	RedisAddr            string
-	RedisUsername        string
-	RedisPassword        string
-	RedisDB              int
+	// MongoDB configuration
+	MongoURI            string
+	MongoDatabaseName   string
+	MongoCollection     string
+	MongoIDField        string
+	MongoExcludeIDField bool
+	// Redis configuration
+	RedisAddr     string
+	RedisUsername string
+	RedisPassword string
+	RedisDB       int
+	RedisCluster  bool
+	// Migration configuration
 	ParrallelLoad        int
 	BatchSize            int64
 	MaxSize              int64
@@ -46,6 +52,7 @@ const (
 	MigrationStatusCompleted  MigrationStatusType = "completed"
 	MigrationStatusFailed     MigrationStatusType = "failed"
 	MigrationStatusPaused     MigrationStatusType = "paused"
+	MigrationStatusStreaming  MigrationStatusType = "streaming"
 )
 
 type MigrationState struct {
@@ -68,7 +75,7 @@ const (
 	DataSortedSet  DataType = "sortedset"
 )
 
-type SourceResult struct {
+type SourceData struct {
 	status bool
 	err    error
 	docs   []bson.M
@@ -79,13 +86,14 @@ type SourceResult struct {
 type Dict map[string]interface{}
 
 type DestinationData struct {
-	status   bool
-	key      string
-	value    string
-	hash     Dict
-	members  []string
-	score    float64
-	dataType DataType
+	status           bool
+	key              string
+	value            string
+	hash             Dict
+	members          []string
+	score            float64
+	dataType         DataType
+	useCustomKeySlot bool
 }
 
 func (i Dict) MarshalBinary() ([]byte, error) {
@@ -222,8 +230,38 @@ func connectToRedis(ctx context.Context, addr string, username string, password 
 	return rdb, nil
 }
 
-func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string, parrallelLoad int, batchSize int64, maxSize int64, startFrom int64) (<-chan SourceResult, int64) {
-	out := make(chan SourceResult, parrallelLoad)
+func watchMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string) <-chan SourceData {
+	out := make(chan SourceData, 1)
+
+	// Get a handle for your collection
+	collection := client.Database(mongoDatabaseName).Collection(mongoCollectionName)
+	fmt.Printf("MongoDb Database: %s\n", mongoDatabaseName)
+	fmt.Printf("MongoDb Collection: %s\n", mongoCollectionName)
+
+	go func() {
+		defer close(out)
+
+		// Watch for changes
+		cursor, err := collection.Watch(ctx, nil)
+		if err != nil {
+			log.Fatalf("Failed to watch collection: %v", err)
+		}
+
+		for cursor.Next(ctx) {
+			var doc bson.M
+			if err = cursor.Decode(&doc); err != nil {
+				log.Printf("Failed to decode doc: %v", err)
+				continue
+			}
+			out <- SourceData{status: true, docs: []bson.M{doc}, start: 0, end: 1}
+		}
+	}()
+
+	return out
+}
+
+func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string, parrallelLoad int, batchSize int64, maxSize int64, startFrom int64) (<-chan SourceData, int64) {
+	out := make(chan SourceData, parrallelLoad)
 
 	// Get a handle for your collection
 	collection := client.Database(mongoDatabaseName).Collection(mongoCollectionName)
@@ -279,9 +317,9 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 
 		// Parallel loading of chunks and batching
 		jobs := make(chan int, chunks)
-		results := make(chan SourceResult, chunks)
+		results := make(chan SourceData, chunks)
 		for c := 1; c <= chunks; c++ {
-			go func(id int, jobs <-chan int, results chan<- SourceResult) {
+			go func(id int, jobs <-chan int, results chan<- SourceData) {
 
 				i := <-jobs
 
@@ -299,7 +337,7 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 					cursor, err := collection.Find(ctx, bson.M{}, findOptions)
 					if err != nil {
 						log.Printf("Worker %d: Failed to find docs in collection: %v", id, err)
-						results <- SourceResult{status: false, err: err, docs: nil, start: skip, end: skip + chunkBatchSize}
+						results <- SourceData{status: false, err: err, docs: nil, start: skip, end: skip + chunkBatchSize}
 						continue
 					}
 
@@ -312,7 +350,7 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 						}
 						batchDocs = append(batchDocs, doc)
 					}
-					results <- SourceResult{status: true, docs: batchDocs, start: skip, end: skip + int64(len(batchDocs))}
+					results <- SourceData{status: true, docs: batchDocs, start: skip, end: skip + int64(len(batchDocs))}
 					cursor.Close(ctx)
 				}
 			}(c, jobs, results)
@@ -320,7 +358,7 @@ func generateMongoDBSourceData(ctx context.Context, client *mongo.Client, mongoD
 
 		// Send jobs to workers
 		log.Printf("Starting Migration - From Offset: %d, Total: %d, Chunks: %d, Chunk Size: %d, Batch Size: %d, Parallel Load: %d\n", startFrom, maxSize, chunks, chunkSize, batchSize, parrallelLoad)
-		for i := 0; i < chunks; i++ {
+		for i := range chunks {
 			jobs <- i
 		}
 		close(jobs)
@@ -434,56 +472,6 @@ func setMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName s
 	}
 }
 
-func transformData(doc bson.M) DestinationData {
-	data := DestinationData{status: false}
-
-	key, keyExists := doc["_key"].(string)
-	if !keyExists {
-		log.Fatalf("Key not found in document: %v", doc)
-		return data
-	}
-	value, valueExists := doc["value"]
-	score, scoreExists := doc["score"]
-	members, membersExists := doc["members"]
-	if !membersExists {
-		array, arrayExists := doc["array"]
-		members = array
-		membersExists = arrayExists
-	}
-
-	data.status = true
-	data.key = parseString(key)
-
-	// If sorted set
-	if scoreExists || score != nil {
-		data.score = parseNumber(score)
-		data.value = parseString(value)
-		data.dataType = DataSortedSet
-		return data
-	}
-
-	// If list
-	if membersExists || members != nil {
-		data.members = parseArray(members)
-		data.dataType = DataTypeList
-		return data
-	}
-
-	// If hash - no value or has more that just id, _key, value
-	if !valueExists || len(doc) > 3 {
-		delete(doc, "_key")
-		delete(doc, "_id")
-		data.hash = parseHash(doc)
-		data.dataType = DataTypeHash
-		return data
-	}
-
-	// If string
-	data.value = parseString(value)
-	data.dataType = DataTypeString
-	return data
-}
-
 func onExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
 	migragionState := getMigrationState(ctx, rdb, collectionName)
 	if migragionState.Status == MigrationStatusInProgress {
@@ -505,12 +493,62 @@ func handleUnexpectedExit(ctx context.Context, rdb *redis.Cmdable, collectionNam
 	os.Exit(0)
 }
 
-func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
+func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client, useStream bool) bool {
 	if config.ContinousReplication {
+		if useStream {
+			return executeStream(ctx, config, rdb, client)
+		}
 		time.Sleep(DB_MIGRATION_CONTINIOUS_SLEEP_DURATION)
 		return execute(ctx, config, rdb, client)
 	}
 	return true
+}
+
+func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
+
+	start := time.Now()
+
+	// Get migration state
+	migragionState := getMigrationState(ctx, rdb, config.MongoCollection)
+
+	// Check if migration is already in progress
+	if migragionState.Status == MigrationStatusInProgress {
+		log.Printf("Migration already in progress. Started At: %s", migragionState.LastStartedAt.String())
+		return handleContinousReplication(ctx, config, rdb, client, false)
+	}
+	if migragionState.Status == MigrationStatusStreaming {
+		log.Printf("Migration already in streaming mode. Started At: %s", migragionState.LastStartedAt.String())
+		return handleContinousReplication(ctx, config, rdb, client, true)
+	}
+
+	// Update migration status
+	migragionState.LastStartedAt = start
+	migragionState.Status = MigrationStatusInProgress
+	setMigrationState(ctx, rdb, config.MongoCollection, migragionState, false)
+
+	// Watch for changes
+	fmt.Print("\n--- Streaming data from MongoDB to Redis --- \n\n")
+	results := watchMongoDB(ctx, client, config.MongoDatabaseName, config.MongoCollection)
+	for docs := range results {
+		if docs.status && docs.docs != nil {
+			// Transform data
+			var destData []DestinationData
+			for _, doc := range docs.docs {
+				destData = append(destData, Transform(config, doc))
+			}
+
+			// Send to destination
+			err := sendToRedis(ctx, rdb, destData)
+			if err != nil {
+				log.Printf("Failed to load documents: %d to %d. Error: %s\n", docs.start, docs.end, err.Error())
+				return false
+			}
+
+			log.Printf("Loaded documents: %d to %d\n", docs.start, docs.end)
+		}
+	}
+
+	return handleContinousReplication(ctx, config, rdb, client, true)
 }
 
 func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
@@ -529,7 +567,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	// Check if migration is already in progress
 	if migragionState.Status == MigrationStatusInProgress {
 		log.Printf("Migration already in progress. Started At: %s", migragionState.LastStartedAt.String())
-		return handleContinousReplication(ctx, config, rdb, client)
+		return handleContinousReplication(ctx, config, rdb, client, false)
 	}
 
 	// Update migration status
@@ -542,7 +580,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 
 	// Load data from Source
 	fmt.Print("\n--- Migrating data from MongoDB to Redis --- \n\n")
-	results, size := generateMongoDBSourceData(ctx, client,
+	results, size := getFromMongoDB(ctx, client,
 		config.MongoDatabaseName,
 		config.MongoCollection, config.ParrallelLoad,
 		int64(config.BatchSize), int64(config.MaxSize), startOffset)
@@ -561,7 +599,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 		log.Printf("No documents left to load from collection: %s. Requested Max size: %d \n", config.MongoCollection, config.MaxSize)
 		log.Printf("Time taken: %s\n", elapsed)
 
-		return handleContinousReplication(ctx, config, rdb, client)
+		return handleContinousReplication(ctx, config, rdb, client, true)
 	}
 
 	var status bool = true
@@ -579,7 +617,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 			// Transform data
 			var destData []DestinationData
 			for _, doc := range batchDocs.docs {
-				destData = append(destData, transformData(doc))
+				destData = append(destData, Transform(config, doc))
 			}
 
 			// Send to destination
@@ -625,7 +663,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 		log.Printf("Failed to load documents. Completed: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 		log.Printf("Time taken: %s\n", elapsed)
 
-		return handleContinousReplication(ctx, config, rdb, client)
+		return handleContinousReplication(ctx, config, rdb, client, false)
 	}
 
 	elapsed := time.Since(start)
@@ -637,7 +675,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	log.Printf("Completed loading documents: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 	log.Printf("Time taken: %s\n", elapsed)
 
-	return handleContinousReplication(ctx, config, rdb, client)
+	return handleContinousReplication(ctx, config, rdb, client, false)
 }
 
 func main() {
@@ -656,11 +694,18 @@ func main() {
 	mongoDatabaseName := os.Getenv("MONGO_DATABASE_NAME")
 	mongoCollectionName := os.Getenv("MONGO_COLLECTION_NAME")
 	mongoURI := fmt.Sprintf("mongodb://%s:%s@%s/%s?retryWrites=false&directConnection=true", os.Getenv("MONGO_USERNAME"), os.Getenv("MONGO_PASSWORD"), os.Getenv("MONGO_ADDR"), mongoDatabaseName)
+	mongoIDField := os.Getenv("MONGO_ID_FIELD")
+	if mongoIDField == "" {
+		mongoIDField = "_id"
+	}
+	mongoExcludeIDField, _ := strconv.ParseBool(os.Getenv("MONGO_EXCLUDE_ID_FIELD"))
+
 	redisAddr := os.Getenv("REDIS_ADDR")
 	redisUsername := os.Getenv("REDIS_USERNAME")
 	redisPassword := os.Getenv("REDIS_PASSWORD")
 	redisDB := int(parseNumber(os.Getenv("REDIS_DB")))
 	redisCluster, _ := strconv.ParseBool(os.Getenv("REDIS_CLUSTER"))
+
 	parrallelLoad := int(parseNumber(os.Getenv("PARRALLEL_LOAD")))
 	batchSize := int64(parseNumber(os.Getenv("BATCH_SIZE")))
 	maxSize := int64(parseNumber(os.Getenv("MAX_SIZE")))
@@ -671,12 +716,20 @@ func main() {
 	println("Continous Replication: ", continousReplication)
 
 	config := MigrationConfig{
-		MongoURI:             mongoURI,
-		MongoDatabaseName:    mongoDatabaseName,
-		MongoCollection:      mongoCollectionName,
-		RedisAddr:            redisAddr,
-		RedisPassword:        redisPassword,
-		RedisDB:              redisDB,
+		// MongoDB configuration
+		MongoURI:            mongoURI,
+		MongoDatabaseName:   mongoDatabaseName,
+		MongoCollection:     mongoCollectionName,
+		MongoIDField:        mongoIDField,
+		MongoExcludeIDField: mongoExcludeIDField,
+
+		// Redis configuration
+		RedisAddr:     redisAddr,
+		RedisUsername: redisUsername,
+		RedisPassword: redisPassword,
+		RedisDB:       redisDB,
+		RedisCluster:  redisCluster,
+		// Migration configuration
 		ParrallelLoad:        parrallelLoad,
 		BatchSize:            batchSize,
 		MaxSize:              maxSize,
@@ -685,7 +738,7 @@ func main() {
 	}
 
 	// Create context
-	ctx := context.TODO()
+	ctx := context.Background()
 
 	// Connect to MongoDB
 	client, err := connectToMongoDB(ctx, mongoURI)
@@ -712,8 +765,16 @@ func main() {
 		redisClient = rdb
 	}
 
+	// Graceful shutdown handling
 	go handleUnexpectedExit(ctx, &redisClient, mongoCollectionName) // Handle unexpected exits
-	defer onExit(ctx, &redisClient, mongoCollectionName)            // Handle normal exits
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic: %v", r)
+			onExit(ctx, &redisClient, mongoCollectionName) // Handle unexpected exit
+		} else {
+			defer onExit(ctx, &redisClient, mongoCollectionName) // Handle normal exits
+		}
+	}()
 
 	// Execute migration
 	execute(ctx, config, &redisClient, client)
