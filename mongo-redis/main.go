@@ -230,6 +230,7 @@ func connectToRedis(ctx context.Context, addr string, username string, password 
 	return rdb, nil
 }
 
+// TODO: WIP
 func watchMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string) <-chan SourceData {
 	out := make(chan SourceData, 1)
 
@@ -496,6 +497,7 @@ func handleUnexpectedExit(ctx context.Context, rdb *redis.Cmdable, collectionNam
 func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client, useStream bool) bool {
 	if config.ContinousReplication {
 		if useStream {
+			// TODO: WIP
 			return executeStream(ctx, config, rdb, client)
 		}
 		time.Sleep(DB_MIGRATION_CONTINIOUS_SLEEP_DURATION)
@@ -504,6 +506,7 @@ func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb
 	return true
 }
 
+// TODO: WIP
 func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
 
 	start := time.Now()
@@ -518,7 +521,7 @@ func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdab
 	}
 	if migragionState.Status == MigrationStatusStreaming {
 		log.Printf("Migration already in streaming mode. Started At: %s", migragionState.LastStartedAt.String())
-		return handleContinousReplication(ctx, config, rdb, client, true)
+		return true
 	}
 
 	// Update migration status
@@ -548,7 +551,7 @@ func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdab
 		}
 	}
 
-	return handleContinousReplication(ctx, config, rdb, client, true)
+	return true
 }
 
 func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
@@ -567,6 +570,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	// Check if migration is already in progress
 	if migragionState.Status == MigrationStatusInProgress {
 		log.Printf("Migration already in progress. Started At: %s", migragionState.LastStartedAt.String())
+		// Use continous replication to handle auto retrying
 		return handleContinousReplication(ctx, config, rdb, client, false)
 	}
 
@@ -599,7 +603,8 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 		log.Printf("No documents left to load from collection: %s. Requested Max size: %d \n", config.MongoCollection, config.MaxSize)
 		log.Printf("Time taken: %s\n", elapsed)
 
-		return handleContinousReplication(ctx, config, rdb, client, true)
+		// TODO: Use continous replication to listen to change stream
+		return handleContinousReplication(ctx, config, rdb, client, false)
 	}
 
 	var status bool = true
@@ -675,6 +680,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	log.Printf("Completed loading documents: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 	log.Printf("Time taken: %s\n", elapsed)
 
+	// TODO: Use continous replication to listen to change stream
 	return handleContinousReplication(ctx, config, rdb, client, false)
 }
 
