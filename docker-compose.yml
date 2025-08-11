@@ -1,13 +1,12 @@
 name: cnc-db-migrate
 services:
+  # MongoDB to Redis Migration
   mongo-redis:
     build:
       context: ./mongo-redis
     working_dir: /app
     volumes:
-      - ./mongo-redis/main.go:/app/main.go
-      - ./mongo-redis/go.mod:/app/go.mod
-      - ./mongo-redis/go.sum:/app/go.sum
+      - ./mongo-redis:/app
     env_file:
       - ./mongo-redis/.env
     environment:
@@ -16,5 +15,37 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
 
+  # Redis
+  redis:
+    image: "redis:latest"
+    restart: unless-stopped
+    expose:
+      - 6379
+    ports:
+      - 6391:6379
+    environment:
+      - REDIS_REPLICATION_MODE=master
+      - REDIS_PASSWORD=''
+    volumes:
+      - redis-storage:/data
+    networks:
+      - cnc-db-network
+
+  # MongoDB
+  mongo:
+    image: "mongo:latest"
+    restart: unless-stopped
+    expose:
+      - 27017
+    ports:
+      - 27018:27017
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin
+
 volumes:
-  mongo-data:
+  redis-storage:
+    driver: local
+networks:
+  cnc-db-network:
+    driver: bridge
