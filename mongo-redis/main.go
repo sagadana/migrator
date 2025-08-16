@@ -37,11 +37,11 @@ type MigrationConfig struct {
 	RedisDB       int
 	RedisCluster  bool
 	// Migration configuration
-	ParrallelLoad        int
-	BatchSize            int64
-	MaxSize              int64
-	StartOffset          int64
-	ContinousReplication bool
+	ParrallelLoad         int
+	BatchSize             int64
+	MaxSize               int64
+	StartOffset           int64
+	ContinuousReplication bool
 }
 
 type MigrationStatusType string
@@ -100,7 +100,7 @@ func (i Dict) MarshalBinary() ([]byte, error) {
 	return json.Marshal(i)
 }
 
-func parseNumber(data interface{}) float64 {
+func parseNumber(data any) float64 {
 	if data == nil {
 		return 0
 	}
@@ -118,7 +118,7 @@ func parseNumber(data interface{}) float64 {
 	}
 }
 
-func parseString(data interface{}) string {
+func parseString(data any) string {
 	if data == nil {
 		return ""
 	}
@@ -173,15 +173,15 @@ func parseHash(data interface{}) Dict {
 }
 
 // Connect to MongoDB
-func connectToMongoDB(ctx context.Context, uri string) (*mongo.Client, error) {
+func connectToMongoDB(ctx *context.Context, uri string) (*mongo.Client, error) {
 	clientOptions := options.Client().ApplyURI(uri)
 	clientOptions.SetConnectTimeout(10 * time.Second)
-	client, err := mongo.Connect(ctx, clientOptions)
+	client, err := mongo.Connect(*ctx, clientOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	err = client.Ping(ctx, nil)
+	err = client.Ping(*ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func connectToMongoDB(ctx context.Context, uri string) (*mongo.Client, error) {
 }
 
 // Connect to Redis
-func connectToRedisCluster(ctx context.Context, addr string, username string, password string, db int) (*redis.ClusterClient, error) {
+func connectToRedisCluster(ctx *context.Context, addr string, username string, password string, db int) (*redis.ClusterClient, error) {
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:       []string{addr},
 		Username:    username,
@@ -203,7 +203,7 @@ func connectToRedisCluster(ctx context.Context, addr string, username string, pa
 		},
 	})
 
-	_, err := rdb.Ping(ctx).Result()
+	_, err := rdb.Ping(*ctx).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func connectToRedisCluster(ctx context.Context, addr string, username string, pa
 	return rdb, nil
 }
 
-func connectToRedis(ctx context.Context, addr string, username string, password string, db int) (*redis.Client, error) {
+func connectToRedis(ctx *context.Context, addr string, username string, password string, db int) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Username:    username,
@@ -221,7 +221,7 @@ func connectToRedis(ctx context.Context, addr string, username string, password 
 		DialTimeout: 10 * time.Second,
 	})
 
-	_, err := rdb.Ping(ctx).Result()
+	_, err := rdb.Ping(*ctx).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +231,7 @@ func connectToRedis(ctx context.Context, addr string, username string, password 
 }
 
 // TODO: WIP
-func watchMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string) <-chan SourceData {
+func watchMongoDB(ctx *context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string) <-chan SourceData {
 	out := make(chan SourceData, 1)
 
 	// Get a handle for your collection
@@ -243,12 +243,12 @@ func watchMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName s
 		defer close(out)
 
 		// Watch for changes
-		cursor, err := collection.Watch(ctx, nil)
+		cursor, err := collection.Watch(*ctx, nil)
 		if err != nil {
 			log.Fatalf("Failed to watch collection: %v", err)
 		}
 
-		for cursor.Next(ctx) {
+		for cursor.Next(*ctx) {
 			var doc bson.M
 			if err = cursor.Decode(&doc); err != nil {
 				log.Printf("Failed to decode doc: %v", err)
@@ -261,7 +261,7 @@ func watchMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName s
 	return out
 }
 
-func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string, parrallelLoad int, batchSize int64, maxSize int64, startFrom int64) (<-chan SourceData, int64) {
+func getFromMongoDB(ctx *context.Context, client *mongo.Client, mongoDatabaseName string, mongoCollectionName string, parrallelLoad int, batchSize int64, maxSize int64, startFrom int64) (<-chan SourceData, int64) {
 	out := make(chan SourceData, parrallelLoad)
 
 	// Get a handle for your collection
@@ -273,7 +273,7 @@ func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName
 	if maxSize == 0 {
 		// Count options
 		countOption := options.EstimatedDocumentCountOptions{}
-		count, err := collection.EstimatedDocumentCount(ctx, &countOption)
+		count, err := collection.EstimatedDocumentCount(*ctx, &countOption)
 		if err != nil {
 			log.Fatalf("Failed to get document count: %v", err)
 		}
@@ -335,7 +335,7 @@ func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName
 					skip := int64(startFrom + (j * (chunkBatchSize)) + (int64(i) * chunkSize))
 					findOptions.SetSkip(skip)
 					findOptions.SetLimit(chunkBatchSize)
-					cursor, err := collection.Find(ctx, bson.M{}, findOptions)
+					cursor, err := collection.Find(*ctx, bson.M{}, findOptions)
 					if err != nil {
 						log.Printf("Worker %d: Failed to find docs in collection: %v", id, err)
 						results <- SourceData{status: false, err: err, docs: nil, start: skip, end: skip + chunkBatchSize}
@@ -343,7 +343,7 @@ func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName
 					}
 
 					var batchDocs []bson.M
-					for cursor.Next(ctx) {
+					for cursor.Next(*ctx) {
 						var doc bson.M
 						if err = cursor.Decode(&doc); err != nil {
 							log.Printf("Worker %d: Failed to decode doc: %v", id, err)
@@ -352,7 +352,7 @@ func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName
 						batchDocs = append(batchDocs, doc)
 					}
 					results <- SourceData{status: true, docs: batchDocs, start: skip, end: skip + int64(len(batchDocs))}
-					cursor.Close(ctx)
+					cursor.Close(*ctx)
 				}
 			}(c, jobs, results)
 		}
@@ -376,9 +376,9 @@ func getFromMongoDB(ctx context.Context, client *mongo.Client, mongoDatabaseName
 	return out, maxSize
 }
 
-func sendToRedis(ctx context.Context, rdb *redis.Cmdable, data []DestinationData) error {
+func sendToRedis(ctx *context.Context, rdb *redis.Cmdable, data []DestinationData) error {
 
-	_, pingErr := (*rdb).Ping(ctx).Result()
+	_, pingErr := (*rdb).Ping(*ctx).Result()
 	if pingErr != nil {
 		return pingErr
 	}
@@ -390,12 +390,12 @@ func sendToRedis(ctx context.Context, rdb *redis.Cmdable, data []DestinationData
 		if d.status {
 			switch d.dataType {
 			case DataSortedSet:
-				pipeline.ZAdd(ctx, key, redis.Z{Score: d.score, Member: d.value})
+				pipeline.ZAdd(*ctx, key, redis.Z{Score: d.score, Member: d.value})
 			case DataTypeSet:
-				pipeline.SAdd(ctx, key, d.value)
+				pipeline.SAdd(*ctx, key, d.value)
 			case DataTypeList:
 				if len(d.members) > 0 {
-					pipeline.LPush(ctx, key, d.members)
+					pipeline.LPush(*ctx, key, d.members)
 				}
 			case DataTypeHash:
 				if len(d.hash) > 0 {
@@ -405,21 +405,21 @@ func sendToRedis(ctx context.Context, rdb *redis.Cmdable, data []DestinationData
 							dict[k] = v
 						}
 					}
-					pipeline.HMSet(ctx, key, dict)
+					pipeline.HMSet(*ctx, key, dict)
 				}
 			case DataTypeString:
 			default:
-				pipeline.Set(ctx, key, d.value, 0)
+				pipeline.Set(*ctx, key, d.value, 0)
 			}
 		}
 	}
-	_, err := pipeline.Exec(ctx)
+	_, err := pipeline.Exec(*ctx)
 	return err
 }
 
-func getMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName string) MigrationState {
+func getMigrationState(ctx *context.Context, rdb *redis.Cmdable, collectionName string) MigrationState {
 	key := fmt.Sprintf("%s:%s", DB_MIGRATION_KEY, collectionName)
-	val, err := (*rdb).HGetAll(ctx, key).Result()
+	val, err := (*rdb).HGetAll(*ctx, key).Result()
 	if err != nil {
 		log.Printf("Failed to get migration state. Error: %v", err)
 		return MigrationState{Status: MigrationStatusStarting, Offset: "0", Total: "0"}
@@ -442,9 +442,9 @@ func getMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName s
 	return state
 }
 
-func setMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName string, state MigrationState, persist bool) {
+func setMigrationState(ctx *context.Context, rdb *redis.Cmdable, collectionName string, state MigrationState, persist bool) {
 
-	_, err := (*rdb).Ping(ctx).Result()
+	_, err := (*rdb).Ping(*ctx).Result()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to connect to Redis. Error: %v", err))
 	}
@@ -461,19 +461,19 @@ func setMigrationState(ctx context.Context, rdb *redis.Cmdable, collectionName s
 		panic(fmt.Sprintf("Failed to unmarshal migration state. Error: %v", err))
 	}
 
-	_, err = (*rdb).HMSet(ctx, key, data).Result()
+	_, err = (*rdb).HMSet(*ctx, key, data).Result()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to set migration state. Error: %v. State: %v", err, data))
 	}
 
 	if persist {
-		(*rdb).Persist(ctx, key)
+		(*rdb).Persist(*ctx, key)
 	} else {
-		(*rdb).Expire(ctx, key, DB_MIGRATION_EXPIRE_AFTER)
+		(*rdb).Expire(*ctx, key, DB_MIGRATION_EXPIRE_AFTER)
 	}
 }
 
-func onExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
+func onExit(ctx *context.Context, rdb *redis.Cmdable, collectionName string) {
 	migragionState := getMigrationState(ctx, rdb, collectionName)
 	if migragionState.Status == MigrationStatusInProgress {
 		migragionState.Status = MigrationStatusFailed
@@ -482,7 +482,7 @@ func onExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
 	}
 }
 
-func handleUnexpectedExit(ctx context.Context, rdb *redis.Cmdable, collectionName string) {
+func handleUnexpectedExit(ctx *context.Context, rdb *redis.Cmdable, collectionName string) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
@@ -494,8 +494,8 @@ func handleUnexpectedExit(ctx context.Context, rdb *redis.Cmdable, collectionNam
 	os.Exit(0)
 }
 
-func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client, useStream bool) bool {
-	if config.ContinousReplication {
+func handleContinuousReplication(ctx *context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client, useStream bool) bool {
+	if config.ContinuousReplication {
 		if useStream {
 			// TODO: WIP
 			return executeStream(ctx, config, rdb, client)
@@ -507,7 +507,7 @@ func handleContinousReplication(ctx context.Context, config MigrationConfig, rdb
 }
 
 // TODO: WIP
-func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
+func executeStream(ctx *context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
 
 	start := time.Now()
 
@@ -517,7 +517,7 @@ func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdab
 	// Check if migration is already in progress
 	if migragionState.Status == MigrationStatusInProgress {
 		log.Printf("Migration already in progress. Started At: %s", migragionState.LastStartedAt.String())
-		return handleContinousReplication(ctx, config, rdb, client, false)
+		return handleContinuousReplication(ctx, config, rdb, client, false)
 	}
 	if migragionState.Status == MigrationStatusStreaming {
 		log.Printf("Migration already in streaming mode. Started At: %s", migragionState.LastStartedAt.String())
@@ -554,7 +554,7 @@ func executeStream(ctx context.Context, config MigrationConfig, rdb *redis.Cmdab
 	return true
 }
 
-func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
+func execute(ctx *context.Context, config MigrationConfig, rdb *redis.Cmdable, client *mongo.Client) bool {
 
 	start := time.Now()
 
@@ -570,8 +570,8 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	// Check if migration is already in progress
 	if migragionState.Status == MigrationStatusInProgress {
 		log.Printf("Migration already in progress. Started At: %s", migragionState.LastStartedAt.String())
-		// Use continous replication to handle auto retrying
-		return handleContinousReplication(ctx, config, rdb, client, false)
+		// Use continuous replication to handle auto retrying
+		return handleContinuousReplication(ctx, config, rdb, client, false)
 	}
 
 	// Update migration status
@@ -603,8 +603,8 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 		log.Printf("No documents left to load from collection: %s. Requested Max size: %d \n", config.MongoCollection, config.MaxSize)
 		log.Printf("Time taken: %s\n", elapsed)
 
-		// TODO: Use continous replication to listen to change stream
-		return handleContinousReplication(ctx, config, rdb, client, false)
+		// TODO: Use continuous replication to listen to change stream
+		return handleContinuousReplication(ctx, config, rdb, client, false)
 	}
 
 	var status bool = true
@@ -616,6 +616,8 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	// Update migration total
 	migragionState.Total = json.Number(strconv.FormatInt(total, 10))
 	setMigrationState(ctx, rdb, config.MongoCollection, migragionState, false)
+
+	// TODO: Use worker pool with parallelLoad as limit to transform and ingest
 
 	for batchDocs := range results {
 		if batchDocs.status && batchDocs.docs != nil {
@@ -668,7 +670,7 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 		log.Printf("Failed to load documents. Completed: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 		log.Printf("Time taken: %s\n", elapsed)
 
-		return handleContinousReplication(ctx, config, rdb, client, false)
+		return handleContinuousReplication(ctx, config, rdb, client, false)
 	}
 
 	elapsed := time.Since(start)
@@ -680,8 +682,8 @@ func execute(ctx context.Context, config MigrationConfig, rdb *redis.Cmdable, cl
 	log.Printf("Completed loading documents: %d/%d (%.2f%%)\n", offset, total, float64(count*100/size))
 	log.Printf("Time taken: %s\n", elapsed)
 
-	// TODO: Use continous replication to listen to change stream
-	return handleContinousReplication(ctx, config, rdb, client, false)
+	// TODO: Use continuous replication to listen to change stream
+	return handleContinuousReplication(ctx, config, rdb, client, false)
 }
 
 func main() {
@@ -716,10 +718,10 @@ func main() {
 	batchSize := int64(parseNumber(os.Getenv("BATCH_SIZE")))
 	maxSize := int64(parseNumber(os.Getenv("MAX_SIZE")))
 	startOffset := int64(parseNumber(os.Getenv("START_OFFSET")))
-	continousReplication, _ := strconv.ParseBool(os.Getenv("CONTINOUS_REPLICATION"))
+	continuousReplication, _ := strconv.ParseBool(os.Getenv("CONTINOUS_REPLICATION"))
 
 	println("Environment: ", enviroment)
-	println("Continous Replication: ", continousReplication)
+	println("Continuous Replication: ", continuousReplication)
 
 	config := MigrationConfig{
 		// MongoDB configuration
@@ -736,18 +738,18 @@ func main() {
 		RedisDB:       redisDB,
 		RedisCluster:  redisCluster,
 		// Migration configuration
-		ParrallelLoad:        parrallelLoad,
-		BatchSize:            batchSize,
-		MaxSize:              maxSize,
-		StartOffset:          startOffset,
-		ContinousReplication: continousReplication,
+		ParrallelLoad:         parrallelLoad,
+		BatchSize:             batchSize,
+		MaxSize:               maxSize,
+		StartOffset:           startOffset,
+		ContinuousReplication: continuousReplication,
 	}
 
 	// Create context
 	ctx := context.Background()
 
 	// Connect to MongoDB
-	client, err := connectToMongoDB(ctx, mongoURI)
+	client, err := connectToMongoDB(&ctx, mongoURI)
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
@@ -756,14 +758,14 @@ func main() {
 	// Connect to Redis
 	var redisClient redis.Cmdable
 	if redisCluster {
-		rdb, err := connectToRedisCluster(ctx, redisAddr, redisUsername, redisPassword, redisDB)
+		rdb, err := connectToRedisCluster(&ctx, redisAddr, redisUsername, redisPassword, redisDB)
 		if err != nil {
 			log.Fatalf("Failed to connect to Redis Cluster. Error: %v", err)
 		}
 		defer rdb.Close()
 		redisClient = rdb
 	} else {
-		rdb, err := connectToRedis(ctx, redisAddr, redisUsername, redisPassword, redisDB)
+		rdb, err := connectToRedis(&ctx, redisAddr, redisUsername, redisPassword, redisDB)
 		if err != nil {
 			log.Fatalf("Failed to connect to Redis. Error: %v", err)
 		}
@@ -772,16 +774,16 @@ func main() {
 	}
 
 	// Graceful shutdown handling
-	go handleUnexpectedExit(ctx, &redisClient, mongoCollectionName) // Handle unexpected exits
+	go handleUnexpectedExit(&ctx, &redisClient, mongoCollectionName) // Handle unexpected exits
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Recovered from panic: %v", r)
-			onExit(ctx, &redisClient, mongoCollectionName) // Handle unexpected exit
+			onExit(&ctx, &redisClient, mongoCollectionName) // Handle unexpected exit
 		} else {
-			defer onExit(ctx, &redisClient, mongoCollectionName) // Handle normal exits
+			defer onExit(&ctx, &redisClient, mongoCollectionName) // Handle normal exits
 		}
 	}()
 
 	// Execute migration
-	execute(ctx, config, &redisClient, client)
+	execute(&ctx, config, &redisClient, client)
 }
