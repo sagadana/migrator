@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"sagadana/migrator/datasources"
+	"sagadana/migrator/helpers"
 	"sagadana/migrator/states"
 	"strconv"
 	"syscall"
@@ -24,27 +25,43 @@ type PipelineConfig struct {
 	ReplicationBatchWindowSecs int64
 }
 
-type Pipeline[F datasources.Datasource, T datasources.Datasource] struct {
+type Pipeline struct {
 	ID        string
 	Store     states.Store
-	From      F
-	To        T
-	Transform func(data *any) (*any, error)
+	From      datasources.Datasource
+	To        datasources.Datasource
+	Transform func(data map[string]any) (map[string]any, error)
+}
+
+type PipelineErrorCode string
+
+const (
+	PipelineErrorProcessing  PipelineErrorCode = "pipeline_processing"
+	PipelineErrorSourceEmpty PipelineErrorCode = "pipeline_source_empty"
+)
+
+type PipelineError struct {
+	Code    PipelineErrorCode
+	Message string
+}
+
+func (e *PipelineError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 // -------------------
 // UTILS
 // -------------------
 
-func (p *Pipeline[F, T]) getState(ctx *context.Context) (states.State, bool) {
+func (p *Pipeline) getState(ctx *context.Context) (states.State, bool) {
 	return p.Store.Load(ctx, p.ID)
 }
 
-func (p *Pipeline[F, T]) setState(ctx *context.Context, state states.State) error {
+func (p *Pipeline) setState(ctx *context.Context, state states.State) error {
 	return p.Store.Store(ctx, p.ID, state)
 }
 
-func (p *Pipeline[F, T]) handleExit(ctx *context.Context) {
+func (p *Pipeline) handleExit(ctx *context.Context) {
 	state, ok := p.getState(ctx)
 	if ok {
 		// Migration
@@ -70,7 +87,7 @@ func (p *Pipeline[F, T]) handleExit(ctx *context.Context) {
 	}
 }
 
-func (p *Pipeline[F, T]) handleUnexpectedExit(ctx *context.Context) {
+func (p *Pipeline) handleUnexpectedExit(ctx *context.Context) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
@@ -80,70 +97,85 @@ func (p *Pipeline[F, T]) handleUnexpectedExit(ctx *context.Context) {
 
 	close(c)
 	os.Exit(0)
+
 }
 
 // -------------------
 // CORE
 // -------------------
 
+type MigrateCount struct {
+	inserts int64
+	updates int64
+	deletes int64
+}
+
 // Process migration
-func (p *Pipeline[F, T]) migrate(
+func (p *Pipeline) migrate(
 	ctx *context.Context,
-	parallel *ParallelConfig,
 	source <-chan datasources.DatasourcePushRequest,
-) (int64, error) {
-	return ParallelWrite(ctx, parallel, source,
-		func(ctx *context.Context, data datasources.DatasourcePushRequest) (int64, error) {
+	track func(count MigrateCount),
+) error {
 
-			var newCount int64
+	for data := range source {
 
-			// Transform
-			if p.Transform != nil {
-				request := datasources.DatasourcePushRequest{
-					Inserts: []any{},
-					Updates: map[string]any{},
-					Deletes: data.Deletes,
-				}
-				// Inserts
-				for _, doc := range data.Inserts {
-					transformed, err := p.Transform(&doc)
-					if err != nil {
-						return 0, err
-					}
-					request.Inserts = append(request.Inserts, transformed)
-				}
-				// Updates
-				for id, doc := range data.Updates {
-					transformed, err := p.Transform(&doc)
-					if err != nil {
-						return 0, err
-					}
-					request.Updates[id] = transformed
-				}
+		count := MigrateCount{}
 
-				// Write
-				if err := p.To.Push(ctx, &request); err != nil {
-					return 0, err
-				}
+		if p.Transform != nil {
 
-				newCount = int64(len(request.Inserts))
-			} else {
-				// Write
-				if err := p.To.Push(ctx, &data); err != nil {
-					return newCount, err
-				}
-				newCount = int64(len(data.Inserts))
+			request := datasources.DatasourcePushRequest{
+				Inserts: []map[string]any{},
+				Updates: map[string]map[string]any{},
+				Deletes: data.Deletes,
 			}
 
-			return newCount, nil
-		})
+			// Inserts
+			for _, doc := range data.Inserts {
+				transformed, err := p.Transform(doc)
+				if err != nil {
+					return err
+				}
+				request.Inserts = append(request.Inserts, transformed)
+			}
+			// Updates
+			for id, doc := range data.Updates {
+				transformed, err := p.Transform(doc)
+				if err != nil {
+					return err
+				}
+				request.Updates[id] = transformed
+			}
+
+			// Write
+			if err := p.To.Push(ctx, &request); err != nil {
+				return err
+			}
+
+			count.inserts = int64(len(request.Inserts))
+			count.updates = int64(len(request.Updates))
+			count.deletes = int64(len(request.Deletes))
+		} else {
+			// Write
+			if err := p.To.Push(ctx, &data); err != nil {
+				return err
+			}
+
+			count.inserts = int64(len(data.Inserts))
+			count.updates = int64(len(data.Updates))
+			count.deletes = int64(len(data.Deletes))
+		}
+
+		// Track progress
+		track(count)
+	}
+
+	return nil
 }
 
 // Process continuous replication
-func (p *Pipeline[F, T]) replicate(
+func (p *Pipeline) replicate(
 	ctx *context.Context,
 	config *PipelineConfig,
-	parallel *ParallelConfig,
 ) error {
 
 	// Watch for changes
@@ -153,17 +185,14 @@ func (p *Pipeline[F, T]) replicate(
 	})
 
 	// Parse destination input from stream
-	input := make(chan datasources.DatasourcePushRequest)
-	go func() {
-		defer close(input)
-		for stream := range watcher {
-			input <- stream.Docs
-		}
-	}()
+	input := helpers.StreamTransform(watcher, func(data datasources.DatasourceStreamResult) datasources.DatasourcePushRequest {
+		return data.Docs
+	})
 
 	// Send to destination
-	_, err := p.migrate(ctx, parallel, input)
-	return err
+	return p.migrate(ctx, input, func(count MigrateCount) {
+		// TODO: Track replication progress
+	})
 }
 
 // -------------------
@@ -171,12 +200,7 @@ func (p *Pipeline[F, T]) replicate(
 // -------------------
 
 // Watch for changes from source (`From`) and replicate them unto the destination (`To`)
-func (p *Pipeline[F, T]) Stream(ctx *context.Context, config PipelineConfig) error {
-
-	parallel := ParallelConfig{
-		Units:     config.ParrallelLoad,
-		BatchSize: config.BatchSize,
-	}
+func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 
 	// Initialize data sources
 	p.From.Init()
@@ -213,7 +237,7 @@ func (p *Pipeline[F, T]) Stream(ctx *context.Context, config PipelineConfig) err
 	p.setState(ctx, state)
 
 	// Replicate changes
-	err := p.replicate(ctx, &config, &parallel)
+	err := p.replicate(ctx, &config)
 	if err != nil {
 		// Track state - Failed
 		state.ReplicationStatus = states.ReplicationStatusFailed
@@ -231,7 +255,7 @@ func (p *Pipeline[F, T]) Stream(ctx *context.Context, config PipelineConfig) err
 }
 
 // Execute migration from source (`From`) to destination (`To`)
-func (p *Pipeline[F, T]) Start(ctx *context.Context, config PipelineConfig) error {
+func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	// Initialize data sources
 	p.From.Init()
@@ -264,31 +288,26 @@ func (p *Pipeline[F, T]) Start(ctx *context.Context, config PipelineConfig) erro
 	go p.handleUnexpectedExit(ctx)
 	defer p.handleExit(ctx)
 
-	// Get previous values
-	previousOffset, _ := state.MigrationOffset.Int64()
-	previousTotal, _ := state.MigrationTotal.Int64()
-
 	// Use previous offset for resume from last position
+	previousOffset, _ := state.MigrationOffset.Int64()
 	startOffet := max(previousOffset, config.StartOffset)
-	log.Printf("Migration - Start offset: %d", startOffet)
 
 	// Get total items
 	total := p.From.Count(ctx, &datasources.DatasourceFetchRequest{
-		Size: config.MaxSize,
-		Skip: startOffet,
+		Size:   config.MaxSize,
+		Offset: startOffet,
 	})
-	log.Printf("Migration - Total: %d", total)
 
-	parallel := ParallelConfig{
+	parallel := helpers.ParallelConfig{
 		Units:       config.ParrallelLoad,
 		Total:       total,
 		BatchSize:   config.BatchSize,
 		StartOffset: startOffet,
 	}
 
+	// Listen to change stream for Continuous Replication
 	if config.ContinuousReplication {
-		// Listen to change stream
-		go p.replicate(ctx, &config, &parallel)
+		go p.replicate(ctx, &config)
 	}
 
 	// Nothing to migrate
@@ -306,48 +325,56 @@ func (p *Pipeline[F, T]) Start(ctx *context.Context, config PipelineConfig) erro
 		p.setState(ctx, state)
 	}
 
+	log.Printf("Migration Started. Offset: %d, Total: %d", startOffet, total)
+
 	// Fetch from source
-	source := ParallelRead(ctx, &parallel,
-		func(ctx *context.Context, job int, size, skip int64) datasources.DatasourceFetchResult {
-			log.Printf("Base : ParallelRead: size: %d, skip: %d", size, skip)
-			return p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
-				Size: size,
-				Skip: skip,
+	source := helpers.ParallelRead(ctx, &parallel,
+		func(ctx *context.Context, job int, size, offset int64) datasources.DatasourceFetchResult {
+			result := p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
+				Size:   size,
+				Offset: offset,
 			})
+			return result
 		})
 
 	// Parse destination input from source
-	input := make(chan datasources.DatasourcePushRequest)
-	go func() {
-		defer close(input)
-		for data := range source {
-			input <- datasources.DatasourcePushRequest{
-				Inserts: data.Docs,
-			}
-		}
-	}()
+	input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
+		return datasources.DatasourcePushRequest{Inserts: data.Docs}
+	})
 
 	// Send to destination
-	count, err := p.migrate(ctx, &parallel, input)
-
-	// Track state - If continuous replication is disabled
-	if !config.ContinuousReplication {
-		// Failed
-		if err != nil {
-			state.MigrationStatus = states.MigrationStatusFailed
-			state.MigrationIssue = err.Error()
-			state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+count, 10))
-			state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+count, 10))
-			state.MigrationStopedAt = time.Now()
-			p.setState(ctx, state)
-			return err
-		}
-		// Success
-		state.MigrationStatus = states.MigrationStatusCompleted
-		state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+count, 10))
-		state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+count, 10))
+	err := p.migrate(ctx, input, func(count MigrateCount) {
+		// Track migration progress
+		previousOffset, _ := state.MigrationOffset.Int64()
+		previousTotal, _ := state.MigrationTotal.Int64()
+		state.MigrationStatus = states.MigrationStatusInProgress
+		state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+count.inserts, 10))
+		state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+count.inserts, 10))
 		state.MigrationStopedAt = time.Now()
 		p.setState(ctx, state)
+
+		log.Printf("Migration Progress: %s of %d", state.MigrationTotal, total)
+	})
+
+	log.Printf("Migration Completed: Total: %s", state.MigrationTotal)
+
+	// Track: Failed
+	if err != nil {
+		state.MigrationStatus = states.MigrationStatusFailed
+		state.MigrationIssue = err.Error()
+		state.MigrationStopedAt = time.Now()
+		p.setState(ctx, state)
+		return err
+	}
+
+	// Track: Success
+	state.MigrationStatus = states.MigrationStatusCompleted
+	state.MigrationStopedAt = time.Now()
+	p.setState(ctx, state)
+
+	// Wait forever for Continuous Replication
+	if config.ContinuousReplication {
+		<-(*ctx).Done()
 	}
 
 	return nil

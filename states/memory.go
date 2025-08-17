@@ -46,6 +46,6 @@ func (ms *MemoryStore[K, V]) Clear(ctx *context.Context) error {
 }
 
 // Creates and returns a new state store.
-func CreateMemoryStateStore() *MemoryStore[string, State] {
+func NewMemoryStateStore() *MemoryStore[string, State] {
 	return &MemoryStore[string, State]{}
 }

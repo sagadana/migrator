@@ -92,10 +92,14 @@ func (sm *FileStore[V]) Clear(ctx *context.Context) error {
 }
 
 // Creates and returns a new state store.
-func CreateFileStateStore(filePath string) *FileStore[State] {
+func NewFileStateStore(basePath, storeName string) *FileStore[State] {
+	stateFilePath, err := filepath.Abs(filepath.Join(basePath, storeName))
+	if err != nil {
+		stateFilePath = storeName
+	}
 	return &FileStore[State]{
 		mutex: sync.Mutex{},
-		path:  filePath,
+		path:  stateFilePath,
 		mode:  0644,
 	}
 }

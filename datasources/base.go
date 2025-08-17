@@ -3,15 +3,15 @@ package datasources
 import "context"
 
 type DatasourcePushRequest struct {
-	Inserts []any
-	Updates map[string]any
+	Inserts []map[string]any
+	Updates map[string]map[string]any
 	Deletes []string
 }
 type DatasourceFetchRequest struct {
 	// Number of items to fetch. 0 to fetch all
 	Size int64
-	// Where start fetching from. 0 to start from beginning
-	Skip int64
+	// Offset to start fetching from. 0 to start from beginning
+	Offset int64
 }
 type DatasourceStreamRequest struct {
 	// Number of items to batch. 0 to disable batching
@@ -21,7 +21,7 @@ type DatasourceStreamRequest struct {
 }
 type DatasourceFetchResult struct {
 	Err   error
-	Docs  []any
+	Docs  []map[string]any
 	Start int64
 	End   int64
 }

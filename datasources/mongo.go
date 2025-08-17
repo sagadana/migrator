@@ -52,6 +52,10 @@ func ConnectToMongoDB(ctx *context.Context, uri string) *mongo.Client {
 }
 
 // NewMongoDatasource creates and returns a new instance of MongoDatasource.
+// - ctx: Context.
+// - uri: Database connection uri.
+// - databaseName: The database name.
+// - collectionName: The collection name.
 func NewMongoDatasource(ctx *context.Context,
 	uri string,
 	databaseName string,
@@ -79,7 +83,7 @@ func (d *MongoDatasource) Count(ctx *context.Context, request DatasourceFetchReq
 		count = int64(request.Size)
 	}
 
-	return max(0, count-min(int64(request.Skip), count))
+	return max(0, count-min(int64(request.Offset), count))
 }
 
 // Get data
@@ -88,15 +92,15 @@ func (d *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRe
 
 	findOptions := options.Find()
 	findOptions.SetSort(d.sort)
-	findOptions.SetSkip(int64(request.Skip))
+	findOptions.SetSkip(int64(request.Offset))
 	findOptions.SetLimit(int64(request.Size))
 	cursor, err := collection.Find(*ctx, d.filter, findOptions)
 	if err != nil {
 		return MongoDatasourceFetchResult{
 			DatasourceFetchResult: DatasourceFetchResult{
 				Err:   err,
-				Start: int64(request.Skip),
-				End:   int64(request.Skip + request.Size),
+				Start: int64(request.Offset),
+				End:   int64(request.Offset + request.Size),
 			},
 			Docs: []bson.M{},
 		}
@@ -115,8 +119,8 @@ func (d *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRe
 
 	return MongoDatasourceFetchResult{
 		DatasourceFetchResult: DatasourceFetchResult{
-			Start: int64(request.Skip),
-			End:   int64(request.Skip + request.Size),
+			Start: int64(request.Offset),
+			End:   int64(request.Offset + request.Size),
 		},
 		Docs: docs,
 	}
@@ -190,8 +194,8 @@ func (d *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 	collection := d.client.Database(d.databaseName).Collection(d.collectionName)
 	out := make(chan MongoDatasourceStreamResult)
 
-	batchSize := request.BatchSize
-	batchWindow := request.BatchWindowSeconds
+	batchSize := max(request.BatchSize, 1)
+	batchWindow := max(request.BatchWindowSeconds, 1)
 
 	go func(bgCtx context.Context) {
 		// Options for the change stream.

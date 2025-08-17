@@ -2,299 +2,417 @@ package datasources
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sagadana/migrator/helpers"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
-const FileIDField = "_id"
+const filePrefix = ".json"
+const indexFileName = "_index" + filePrefix
 
-// FileDatasource provides a Datasource implementation based on a single JSON file.
-// Note: This implementation is for demonstration and may not be efficient for very large files.
+// FileDatasource provides a Datasource implementation that stores records
+// as individual files in a collection directory, managed by a central index file.
 type FileDatasource struct {
-	path string
-	mode os.FileMode
-	// Mutex to handle concurrent access to the file and in-memory cache
-	mu sync.RWMutex
-	// In-memory representation of the JSON file's data
-	cache []any
+	collectionName string
+	idField        string
+	collectionPath string
+	indexPath      string
+	mode           os.FileMode
+	mu             sync.RWMutex
+	// index stores a map of documentID -> content hash for quick lookups and change detection.
+	index     map[string]string
+	indexKeys []string
 }
 
-// NewFileDatasource creates and returns a new instance of FileDatasource.
-func NewFileDatasource(path string) *FileDatasource {
+// NewFileDatasource creates a new instance of the indexed file datasource.
+// - collectionName: The name of the folder to store data files.
+// - idField: The name of the field within each document to use as its unique ID.
+func NewFileDatasource(basePath, collectionName, idField string) *FileDatasource {
+	collectionPath, err := filepath.Abs(filepath.Join(basePath, collectionName))
+	if err != nil {
+		collectionPath = filepath.Join(basePath, collectionName)
+	}
+	indexPath, err := filepath.Abs(filepath.Join(basePath, collectionName, indexFileName))
+	if err != nil {
+		indexPath = filepath.Join(basePath, collectionName, indexFileName)
+	}
+
 	return &FileDatasource{
-		path:  path,
-		mode:  0644,
-		cache: make([]any, 0),
+		collectionName: collectionName,
+		idField:        idField,
+		collectionPath: collectionPath,
+		indexPath:      indexPath,
+		index:          make(map[string]string),
+		indexKeys:      []string{},
+		mode:           0644,
 	}
 }
 
-// save writes the current in-memory cache to the file, overwriting its contents.
-func (ds *FileDatasource) save() error {
-	bytes, err := json.MarshalIndent(ds.cache, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal cache to JSON: %w", err)
-	}
-	return os.WriteFile(ds.path, bytes, ds.mode)
+// --- Private Helper Methods ---
+
+// calculateHash computes a SHA256 hash for a given byte slice.
+func calculateHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
-// load reads the file and populates the in-memory cache.
-func (ds *FileDatasource) load() error {
-	file, err := os.Open(ds.path)
-	if err != nil {
-		// If file doesn't exist, create it with an empty JSON array
-		if os.IsNotExist(err) {
-			return os.WriteFile(ds.path, []byte("[]"), ds.mode)
+// getID extracts the document ID from a record using reflection.
+func (ds *FileDatasource) getID(record any) (string, error) {
+	val := reflect.ValueOf(record)
+	// If the record is a map
+	if val.Kind() == reflect.Map {
+		for _, key := range val.MapKeys() {
+			if key.String() == ds.idField {
+				return fmt.Sprintf("%v", val.MapIndex(key).Interface()), nil
+			}
 		}
-		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	return "", fmt.Errorf("idField '%s' not found in record", ds.idField)
+}
 
-	bytes, err := io.ReadAll(file)
+// processIndex sorts index and loads index keys for pagination use
+func (ds *FileDatasource) processIndex() {
+	// Sort index
+	keys := make([]string, 0, len(ds.index))
+	for id := range ds.index {
+		keys = append(keys, id)
+	}
+	helpers.NumberAwareSort(keys)
+	ds.indexKeys = keys
+}
+
+// loadIndex reads the index file from disk into the in-memory map.
+func (ds *FileDatasource) loadIndex() error {
+	if _, err := os.Stat(ds.indexPath); os.IsNotExist(err) {
+		return nil // Index doesn't exist yet, which is fine.
+	}
+
+	bytes, err := os.ReadFile(ds.indexPath)
 	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
+		return fmt.Errorf("failed to read index file: %w", err)
 	}
-
-	// Handle empty file case
 	if len(bytes) == 0 {
-		ds.cache = make([]any, 0)
-		return nil
+		return nil // Empty index file
 	}
 
-	var data []any
-	if err := json.Unmarshal(bytes, &data); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON: %w", err)
+	if err = json.Unmarshal(bytes, &ds.index); err != nil {
+		return err
 	}
-	ds.cache = data
+
+	// Process index after loading
+	ds.processIndex()
 	return nil
 }
 
-// Init loads data from the JSON file into memory. It creates the file if it doesn't exist.
+// saveIndex writes the current in-memory index to the _index.json file.
+func (ds *FileDatasource) saveIndex() error {
+	// Re-process index before saving
+	ds.processIndex()
+
+	bytes, err := json.MarshalIndent(ds.index, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal index: %w", err)
+	}
+	return os.WriteFile(ds.indexPath, bytes, ds.mode)
+}
+
+// buildIndex scans the collection directory and builds the index from scratch.
+// This is a recovery mechanism if the index file is missing or corrupt.
+func (ds *FileDatasource) buildIndex() error {
+	log.Printf("Index file for %s not found. Building index from data files...", ds.collectionName)
+	entries, err := os.ReadDir(ds.collectionPath)
+	if err != nil {
+		return fmt.Errorf("failed to read collection directory: %w", err)
+	}
+
+	index := make(map[string]string)
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == indexFileName {
+			continue
+		}
+
+		path := filepath.Join(ds.collectionPath, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("Warning: could not read file %s during index build: %v", path, err)
+			continue
+		}
+		hash := calculateHash(content)
+		docID := strings.TrimSuffix(entry.Name(), filePrefix)
+
+		index[docID] = hash
+	}
+
+	ds.index = index
+	return ds.saveIndex()
+}
+
+// Load content of CSV file into datasource
+func (ds *FileDatasource) LoadCSV(ctx *context.Context, path string, batchSize int64) error {
+	ds.Init()
+
+	result, err := helpers.StreamCSV(path, batchSize)
+	if err != nil {
+		return err
+	}
+
+	for data := range result {
+		bytes, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+
+		converted := []map[string]any{}
+		err = json.Unmarshal(bytes, &converted)
+		if err != nil {
+			return err
+		}
+
+		err = ds.Push(ctx, &DatasourcePushRequest{
+			Inserts: converted,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// --- Datasource Interface Implementation ---
+
+// Init sets up the datasource by creating the collection directory and loading/building the index.
 func (ds *FileDatasource) Init() {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	if err := ds.load(); err != nil {
-		// Using panic because Init is critical for the datasource's operation
-		panic(fmt.Sprintf("FATAL: could not initialize file datasource: %v", err))
+	if err := os.MkdirAll(ds.collectionPath, ds.mode); err != nil {
+		panic(fmt.Sprintf("FATAL: could not create collection directory: %v", err))
 	}
-	log.Printf("File datasource initialized from '%s'", ds.path)
+
+	if err := ds.loadIndex(); err != nil {
+		panic(fmt.Sprintf("FATAL: could not load index file: %v", err))
+	}
+
+	// If the index is empty but the directory might have files, build it.
+	if len(ds.index) == 0 {
+		if err := ds.buildIndex(); err != nil {
+			panic(fmt.Sprintf("FATAL: could not build index: %v", err))
+		}
+	}
+	log.Printf("File datasource '%s' initialized with %d records.", ds.collectionName, len(ds.index))
 }
 
-// Count returns the total number of documents in the file.
+// Count returns the total number of records by checking the index size.
 func (ds *FileDatasource) Count(_ *context.Context, _ *DatasourceFetchRequest) int64 {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
-	return int64(len(ds.cache))
+	return int64(len(ds.index))
 }
 
-// Fetch retrieves a paginated list of documents from the file.
+// Fetch retrieves a paginated set of documents by reading individual files based on the index.
 func (ds *FileDatasource) Fetch(_ *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 
-	total := int64(len(ds.cache))
-	start := request.Skip
-	end := start + request.Size
-
-	if start < 0 {
-		start = 0
-	}
-	if start >= total {
-		// If the starting point is beyond the data, return empty
-		return DatasourceFetchResult{Docs: []any{}, Start: start, End: start}
+	total := int64(len(ds.indexKeys))
+	last := max(0, total-1)
+	size := request.Size
+	if size <= 0 {
+		size = total
 	}
 
-	// If size is 0 or extends beyond the cache length, fetch until the end
-	if request.Size == 0 || end > total {
-		end = total
+	start := max(0, request.Offset)
+	end := max(0, (start+size)-1)
+	if end == 0 || end >= last {
+		end = last
 	}
 
-	return DatasourceFetchResult{
-		Docs:  ds.cache[start:end],
-		Start: start,
-		End:   end,
+	if total == 0 || start >= last {
+		return DatasourceFetchResult{Docs: []map[string]any{}, Start: start, End: end}
 	}
+
+	// Itterate through index to fetch files
+	docs := make([]map[string]any, 0, size)
+	for i := start; i <= end; i++ {
+		docID := ds.indexKeys[i]
+
+		filePath := filepath.Join(ds.collectionPath, docID+filePrefix)
+		bytes, err := os.ReadFile(filePath)
+		if err != nil {
+			return DatasourceFetchResult{Err: fmt.Errorf("failed to read file for doc ID %s: %w", docID, err)}
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(bytes, &doc); err != nil {
+			return DatasourceFetchResult{Err: fmt.Errorf("failed to unmarshal doc ID %s: %w", docID, err)}
+		}
+		docs = append(docs, doc)
+	}
+
+	return DatasourceFetchResult{Docs: docs, Start: start, End: end}
 }
 
-// Push applies inserts, updates, and deletes to the file.
-// For simplicity, updates and deletes are identified by matching the entire object.
-// A more robust implementation would match based on a unique ID.
+// Push applies inserts, updates, and deletes to the file system and updates the index.
 func (ds *FileDatasource) Push(_ *context.Context, request *DatasourcePushRequest) error {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	// 1. Handle Deletes
-	if len(request.Deletes) > 0 {
-		newCache := make([]any, 0, len(ds.cache))
-		deleteSet := make(map[string]struct{})
-		for _, item := range request.Deletes {
-			// Create a comparable representation (e.g., JSON string)
-			bytes, _ := json.Marshal(item)
-			deleteSet[string(bytes)] = struct{}{}
+	// 1. Handle Inserts
+	for _, record := range request.Inserts {
+		docID, err := ds.getID(record)
+		if err != nil {
+			return fmt.Errorf("failed to get record ID: %w", err)
 		}
-
-		for _, item := range ds.cache {
-			bytes, _ := json.Marshal(item)
-			if _, found := deleteSet[string(bytes)]; !found {
-				newCache = append(newCache, item)
-			}
+		bytes, err := json.MarshalIndent(record, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal insert for ID %s: %w", docID, err)
 		}
-		ds.cache = newCache
+		filePath := filepath.Join(ds.collectionPath, docID+filePrefix)
+		if err := os.WriteFile(filePath, bytes, ds.mode); err != nil {
+			return fmt.Errorf("failed to write insert for ID %s: %w", docID, err)
+		}
+		ds.index[docID] = calculateHash(bytes)
 	}
 
 	// 2. Handle Updates
-	if len(request.Updates) > 0 {
-		// This is a naive implementation: it replaces the matching old doc with the new one.
-		// Assumes updates are provided as complete new documents.
-		// It requires a unique identifier (e.g., `_id`) in the documents.
-		updateMap := make(map[any]any)
-		for _, item := range request.Updates {
-			if m, ok := item.(map[string]any); ok {
-				if id, exists := m[FileIDField]; exists {
-					updateMap[id] = item
-				}
-			}
+	for docID, record := range request.Updates {
+		bytes, err := json.MarshalIndent(record, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal update for ID %s: %w", docID, err)
 		}
-
-		for i, item := range ds.cache {
-			if m, ok := item.(map[string]any); ok {
-				if id, exists := m[FileIDField]; exists {
-					if updatedDoc, found := updateMap[id]; found {
-						ds.cache[i] = updatedDoc
-					}
-				}
-			}
+		filePath := filepath.Join(ds.collectionPath, docID+filePrefix)
+		if err := os.WriteFile(filePath, bytes, ds.mode); err != nil {
+			return fmt.Errorf("failed to write update for ID %s: %w", docID, err)
 		}
+		ds.index[docID] = calculateHash(bytes)
 	}
 
-	// 3. Handle Inserts
-	if len(request.Inserts) > 0 {
-		ds.cache = append(ds.cache, request.Inserts...)
+	// 3. Handle Deletes
+	for _, docID := range request.Deletes {
+		filePath := filepath.Join(ds.collectionPath, docID+filePrefix)
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to delete file for ID %s: %w", docID, err)
+		}
+		delete(ds.index, docID)
 	}
 
-	return ds.save()
+	// 4. Persist the updated index
+	return ds.saveIndex()
 }
 
-// Watch listens for changes to the underlying file and streams them.
-func (ds *FileDatasource) Watch(ctx *context.Context, _ *DatasourceStreamRequest) <-chan DatasourceStreamResult {
-	results := make(chan DatasourceStreamResult)
+// Watch listens for file system events in the collection directory to report changes.
+func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
+	out := make(chan DatasourceStreamResult)
+
+	batchSize := max(request.BatchSize, 1)
+	batchWindow := max(request.BatchWindowSeconds, 1)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		out <- DatasourceStreamResult{Err: fmt.Errorf("failed to create file watcher: %w", err)}
+		defer close(out)
+		return out
+	}
 
 	go func(bgCtx context.Context) {
-		defer close(results)
-
-		watcher, err := fsnotify.NewWatcher()
-		if err != nil {
-			results <- DatasourceStreamResult{Err: fmt.Errorf("failed to create file watcher: %w", err)}
-			return
-		}
+		defer close(out)
 		defer watcher.Close()
 
-		if err := watcher.Add(ds.path); err != nil {
-			results <- DatasourceStreamResult{Err: fmt.Errorf("failed to add file to watcher: %w", err)}
-			return
-		}
+		// Ticker to enforce the batch processing time window
+		ticker := time.NewTicker(time.Duration(batchWindow) * time.Second)
+		defer ticker.Stop()
 
-		log.Printf("Watching file '%s' for changes...", ds.path)
+		// Buffer to hold the batch of change events
+		batch := DatasourcePushRequest{Updates: make(map[string]map[string]any)}
 
+		log.Printf("Watching directory '%s' for changes...", ds.collectionPath)
 		for {
 			select {
 			case <-bgCtx.Done():
-				// Context was cancelled, so we stop watching.
+				log.Println("Watching: Context cancelled")
+
+				// Context has been cancelled. Process any remaining events in the batch before exiting.
+				out <- DatasourceStreamResult{Docs: batch}
 				return
+
+			case <-ticker.C:
+
+				// Time window has elapsed. Process the batch if it's not empty.
+				if len(batch.Inserts) > 0 || len(batch.Updates) > 0 || len(batch.Deletes) > 0 {
+					out <- DatasourceStreamResult{Docs: batch}
+					// Reset the batch buffer
+					batch = DatasourcePushRequest{Updates: make(map[string]map[string]any)}
+				}
+
 			case event, ok := <-watcher.Events:
 				if !ok {
-					return // Channel closed
+					return
 				}
-				// We only care about writes to the file.
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Printf("Detected file write event: %s", event.Name)
 
-					// Debounce to avoid rapid firing
-					time.Sleep(100 * time.Millisecond)
+				// Ignore events for the index file itself
+				if filepath.Base(event.Name) == indexFileName {
+					continue
+				}
 
-					ds.mu.Lock()
-					oldCache := ds.cache // Keep old data for comparison
-					if err := ds.load(); err != nil {
-						log.Printf("Error reloading file after change: %v", err)
-						results <- DatasourceStreamResult{
-							Err: err,
-						}
-						ds.mu.Unlock()
-						continue
+				docID := strings.TrimSuffix(filepath.Base(event.Name), filePrefix)
+
+				// CREATE or WRITE event
+				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+					content, err := os.ReadFile(event.Name)
+					if err != nil {
+						continue // File might be gone again, skip
 					}
-					newCache := ds.cache
-					ds.mu.Unlock()
+					newHash := calculateHash(content)
+					oldHash, exists := ds.index[docID]
 
-					// Diff the old and new cache to find changes
-					changes := diff(oldCache, newCache)
-					if len(changes.Inserts) > 0 || len(changes.Updates) > 0 || len(changes.Deletes) > 0 {
-						results <- DatasourceStreamResult{
-							Docs: changes,
+					if !exists { // It's a new file -> Insert
+						var doc map[string]any
+						if json.Unmarshal(content, &doc) == nil {
+							batch.Inserts = append(batch.Inserts, doc)
 						}
+					} else if newHash != oldHash { // File changed -> Update
+						var doc map[string]any
+						if json.Unmarshal(content, &doc) == nil {
+							batch.Updates[docID] = doc
+						}
+					}
+				} else if event.Has(fsnotify.Remove) { // REMOVE event
+					if _, exists := ds.index[docID]; exists {
+						batch.Deletes = append(batch.Deletes, docID)
 					}
 				}
+
+				// If batch is full, process it immediately.
+				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) >= int(batchSize) {
+					out <- DatasourceStreamResult{Docs: batch}
+					// Reset the batch buffer and the ticker
+					batch = DatasourcePushRequest{Updates: make(map[string]map[string]any)}
+					ticker.Reset(time.Duration(batchWindow) * time.Second)
+				}
+
 			case err, ok := <-watcher.Errors:
 				if !ok {
-					return // Channel closed
+					return
 				}
 				log.Printf("File watcher error: %v", err)
-				results <- DatasourceStreamResult{
-					Err: err,
-				}
 			}
 		}
 	}(*ctx)
 
-	return results
-}
-
-// diff compares two slices of documents and identifies inserts, updates, and deletes.
-// This helper assumes documents are maps with an FileIDField field for identification.
-func diff(oldDocs, newDocs []any) DatasourcePushRequest {
-	oldMap := make(map[string]any)
-	for _, doc := range oldDocs {
-		if m, ok := doc.(map[string]any); ok {
-			if id, exists := m[FileIDField]; exists {
-				oldMap[id.(string)] = doc
-			}
-		}
+	if err := watcher.Add(ds.collectionPath); err != nil {
+		out <- DatasourceStreamResult{Err: fmt.Errorf("failed to add collection to watcher: %w", err)}
 	}
 
-	newMap := make(map[string]any)
-	for _, doc := range newDocs {
-		if m, ok := doc.(map[string]any); ok {
-			if id, exists := m[FileIDField]; exists {
-				newMap[id.(string)] = doc
-			}
-		}
-	}
-
-	var req DatasourcePushRequest
-
-	// Check for updates and deletes
-	for id, oldDoc := range oldMap {
-		newDoc, found := newMap[id]
-		if !found {
-			req.Deletes = append(req.Deletes, id)
-		} else if !reflect.DeepEqual(oldDoc, newDoc) {
-			req.Updates[id] = newDoc
-		}
-	}
-
-	// Check for inserts
-	for id, newDoc := range newMap {
-		if _, found := oldMap[id]; !found {
-			req.Inserts = append(req.Inserts, newDoc)
-		}
-	}
-
-	return req
+	return out
 }

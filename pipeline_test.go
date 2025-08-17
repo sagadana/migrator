@@ -9,29 +9,37 @@ import (
 	"time"
 )
 
-func TestPipeline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
+func TestMigrationPipeline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.TODO())
 	defer func() {
 		time.Sleep(1 * time.Second) // Wait for logs
 		cancel()
 	}()
 
-	type FileToFilePipeline = pipelines.Pipeline[*datasources.FileDatasource, *datasources.FileDatasource]
+	basePath := "./.test"
+	fileFromDs := datasources.NewFileDatasource(basePath, "test-from-customers", "Index")
+	err := fileFromDs.LoadCSV(&ctx, "./tests/sample-100.csv", 10)
+	if err != nil {
+		t.Errorf("failed to load data from CSV: %s", err)
+	}
 
-	// client := datasources.ConnectToMongoDB(&ctx)
-	fileFromDs := datasources.NewFileDatasource("./test-from.json")
-	fileToDs := datasources.NewFileDatasource("./test-to.json")
-	pipeline := FileToFilePipeline{
+	fileToDs := datasources.NewFileDatasource(basePath, "test-to-customers", "Index")
+	pipeline := pipelines.Pipeline{
 		ID:   "test-pipeline-1",
 		From: fileFromDs,
 		To:   fileToDs,
-		// Store: states.CreateMemoryStateStore(),
-		Store: states.CreateFileStateStore("./state.json"),
+		// Store: states.NewMemoryStateStore(),
+		Store: states.NewFileStateStore(basePath, "state.json"),
 	}
 
 	pipelineConfig := pipelines.PipelineConfig{
-		ParrallelLoad: 2,
-		BatchSize:     4,
+		ParrallelLoad:              5,
+		BatchSize:                  10,
+		ReplicationBatchSize:       10,
+		ReplicationBatchWindowSecs: 10,
 	}
-	pipeline.Start(&ctx, pipelineConfig)
+	err = pipeline.Start(&ctx, pipelineConfig)
+	if err != nil {
+		t.Errorf("failed to process migration: %s", err)
+	}
 }
