@@ -79,11 +79,20 @@ func (d *MongoDatasource) Count(ctx *context.Context, request DatasourceFetchReq
 
 	countOption := options.EstimatedDocumentCountOptions{}
 	count, err := collection.EstimatedDocumentCount(*ctx, &countOption)
-	if err != nil {
-		count = int64(request.Size)
+	if err != nil || count == 0 {
+		return 0
 	}
 
-	return max(0, count-min(int64(request.Offset), count))
+	offset := int64(0)
+
+	if request.Size > 0 && request.Size < count {
+		count = request.Size
+	}
+	if request.Offset > 0 && request.Offset >= count {
+		offset = 0
+	}
+
+	return max(0, count-offset)
 }
 
 // Get data

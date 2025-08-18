@@ -23,6 +23,10 @@ type PipelineConfig struct {
 	ContinuousReplication      bool
 	ReplicationBatchSize       int64
 	ReplicationBatchWindowSecs int64
+
+	OnStart    func()
+	OnProgress func(count MigrateCount)
+	OnStop     func(state states.State)
 }
 
 type Pipeline struct {
@@ -53,7 +57,7 @@ func (e *PipelineError) Error() string {
 // UTILS
 // -------------------
 
-func (p *Pipeline) getState(ctx *context.Context) (states.State, bool) {
+func (p *Pipeline) GetState(ctx *context.Context) (states.State, bool) {
 	return p.Store.Load(ctx, p.ID)
 }
 
@@ -62,7 +66,7 @@ func (p *Pipeline) setState(ctx *context.Context, state states.State) error {
 }
 
 func (p *Pipeline) handleExit(ctx *context.Context) {
-	state, ok := p.getState(ctx)
+	state, ok := p.GetState(ctx)
 	if ok {
 		// Migration
 		if state.MigrationStatus == states.MigrationStatusStarting ||
@@ -191,7 +195,9 @@ func (p *Pipeline) replicate(
 
 	// Send to destination
 	return p.migrate(ctx, input, func(count MigrateCount) {
-		// TODO: Track replication progress
+		if config.OnProgress != nil {
+			go config.OnProgress(count)
+		}
 	})
 }
 
@@ -202,12 +208,8 @@ func (p *Pipeline) replicate(
 // Watch for changes from source (`From`) and replicate them unto the destination (`To`)
 func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 
-	// Initialize data sources
-	p.From.Init()
-	p.To.Init()
-
 	// Get current state
-	state, ok := p.getState(ctx)
+	state, ok := p.GetState(ctx)
 
 	// New|Resuming? Mark as starting
 	if !ok ||
@@ -236,10 +238,16 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	state.ReplicationStatus = states.ReplicationStatusStreaming
 	p.setState(ctx, state)
 
+	log.Printf("Replication Started")
+	if config.OnStart != nil {
+		go config.OnStart()
+	}
+
 	// Replicate changes
 	err := p.replicate(ctx, &config)
+
+	// Track: Failed
 	if err != nil {
-		// Track state - Failed
 		state.ReplicationStatus = states.ReplicationStatusFailed
 		state.ReplicationIssue = err.Error()
 		state.ReplicationStopedAt = time.Now()
@@ -247,22 +255,24 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 		return err
 	}
 
-	// Track state - Paused
+	// Track: Paused
 	state.ReplicationStatus = states.ReplicationStatusPaused
 	state.ReplicationStopedAt = time.Now()
 	p.setState(ctx, state)
+
+	log.Printf("Replication Stopped")
+	if config.OnStop != nil {
+		go config.OnStop(state)
+	}
+
 	return nil
 }
 
 // Execute migration from source (`From`) to destination (`To`)
 func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
-	// Initialize data sources
-	p.From.Init()
-	p.To.Init()
-
 	// Get current state
-	state, ok := p.getState(ctx)
+	state, ok := p.GetState(ctx)
 
 	// New|Resuming? Mark as starting
 	if !ok ||
@@ -325,7 +335,10 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		p.setState(ctx, state)
 	}
 
-	log.Printf("Migration Started. Offset: %d, Total: %d", startOffet, total)
+	log.Printf("Migration Started. Total: %d, Offset: %d", total, startOffet)
+	if config.OnStart != nil {
+		go config.OnStart()
+	}
 
 	// Fetch from source
 	source := helpers.ParallelRead(ctx, &parallel,
@@ -350,13 +363,13 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		state.MigrationStatus = states.MigrationStatusInProgress
 		state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+count.inserts, 10))
 		state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+count.inserts, 10))
-		state.MigrationStopedAt = time.Now()
 		p.setState(ctx, state)
 
-		log.Printf("Migration Progress: %s of %d", state.MigrationTotal, total)
+		log.Printf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset)
+		if config.OnProgress != nil {
+			go config.OnProgress(count)
+		}
 	})
-
-	log.Printf("Migration Completed: Total: %s", state.MigrationTotal)
 
 	// Track: Failed
 	if err != nil {
@@ -371,6 +384,11 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	state.MigrationStatus = states.MigrationStatusCompleted
 	state.MigrationStopedAt = time.Now()
 	p.setState(ctx, state)
+
+	log.Printf("Migration Completed. Total: %s, Offset: %s", state.MigrationTotal, state.MigrationOffset)
+	if config.OnStop != nil {
+		go config.OnStop(state)
+	}
 
 	// Wait forever for Continuous Replication
 	if config.ContinuousReplication {

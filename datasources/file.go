@@ -48,7 +48,7 @@ func NewFileDatasource(basePath, collectionName, idField string) *FileDatasource
 		indexPath = filepath.Join(basePath, collectionName, indexFileName)
 	}
 
-	return &FileDatasource{
+	ds := &FileDatasource{
 		collectionName: collectionName,
 		idField:        idField,
 		collectionPath: collectionPath,
@@ -57,6 +57,11 @@ func NewFileDatasource(basePath, collectionName, idField string) *FileDatasource
 		indexKeys:      []string{},
 		mode:           0644,
 	}
+
+	// Initialize data source
+	ds.Init()
+
+	return ds
 }
 
 // --- Private Helper Methods ---
@@ -130,7 +135,6 @@ func (ds *FileDatasource) saveIndex() error {
 // buildIndex scans the collection directory and builds the index from scratch.
 // This is a recovery mechanism if the index file is missing or corrupt.
 func (ds *FileDatasource) buildIndex() error {
-	log.Printf("Index file for %s not found. Building index from data files...", ds.collectionName)
 	entries, err := os.ReadDir(ds.collectionPath)
 	if err != nil {
 		return fmt.Errorf("failed to read collection directory: %w", err)
@@ -160,8 +164,6 @@ func (ds *FileDatasource) buildIndex() error {
 
 // Load content of CSV file into datasource
 func (ds *FileDatasource) LoadCSV(ctx *context.Context, path string, batchSize int64) error {
-	ds.Init()
-
 	result, err := helpers.StreamCSV(path, batchSize)
 	if err != nil {
 		return err
@@ -187,6 +189,7 @@ func (ds *FileDatasource) LoadCSV(ctx *context.Context, path string, batchSize i
 		}
 	}
 
+	log.Printf("File datasource '%s' synced %d records from CSV", ds.collectionName, len(ds.index))
 	return nil
 }
 
@@ -207,6 +210,7 @@ func (ds *FileDatasource) Init() {
 
 	// If the index is empty but the directory might have files, build it.
 	if len(ds.index) == 0 {
+		log.Printf("Building index for '%s' collection from data files...", ds.collectionName)
 		if err := ds.buildIndex(); err != nil {
 			panic(fmt.Sprintf("FATAL: could not build index: %v", err))
 		}
@@ -215,10 +219,25 @@ func (ds *FileDatasource) Init() {
 }
 
 // Count returns the total number of records by checking the index size.
-func (ds *FileDatasource) Count(_ *context.Context, _ *DatasourceFetchRequest) int64 {
+func (ds *FileDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) int64 {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
-	return int64(len(ds.index))
+
+	count := int64(len(ds.indexKeys))
+	offset := int64(0)
+
+	if count == 0 {
+		return 0
+	}
+
+	if request.Size > 0 && request.Size < count {
+		count = request.Size
+	}
+	if request.Offset > 0 && request.Offset >= count {
+		offset = 0
+	}
+
+	return max(0, count-offset)
 }
 
 // Fetch retrieves a paginated set of documents by reading individual files based on the index.

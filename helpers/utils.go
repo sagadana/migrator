@@ -27,7 +27,7 @@ func ParallelRead[T any](
 
 	units := config.Units
 	total := config.Total
-	batchSize := config.BatchSize
+	batchSize := min(config.BatchSize, total)
 	startOffset := config.StartOffset
 
 	if units <= 0 {
