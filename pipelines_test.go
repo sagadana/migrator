@@ -32,7 +32,10 @@ var tests = []StoreType{
 func getTempBasePath() string {
 	basePath := os.Getenv("RUNNER_TEMP")
 	if basePath == "" {
-		basePath = os.TempDir()
+		basePath = os.Getenv("TEMP_BASE_PATH")
+		if basePath == "" {
+			basePath = os.TempDir()
+		}
 	}
 	return basePath
 }
