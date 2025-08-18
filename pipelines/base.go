@@ -7,16 +7,17 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sagadana/migrator/datasources"
-	"sagadana/migrator/helpers"
-	"sagadana/migrator/states"
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/sagadana/migrator/datasources"
+	"github.com/sagadana/migrator/helpers"
+	"github.com/sagadana/migrator/states"
 )
 
 type PipelineConfig struct {
-	ParrallelLoad              int
+	ParallelLoad               int
 	BatchSize                  int64
 	MaxSize                    int64
 	StartOffset                int64
@@ -309,7 +310,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	})
 
 	parallel := helpers.ParallelConfig{
-		Units:       config.ParrallelLoad,
+		Units:       config.ParallelLoad,
 		Total:       total,
 		BatchSize:   config.BatchSize,
 		StartOffset: startOffet,

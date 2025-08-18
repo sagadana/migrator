@@ -10,10 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sagadana/migrator/helpers"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sagadana/migrator/helpers"
 
 	"github.com/fsnotify/fsnotify"
 )

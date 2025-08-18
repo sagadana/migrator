@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sagadana/migrator/datasources"
-	"sagadana/migrator/pipelines"
-	"sagadana/migrator/states"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sagadana/migrator/datasources"
+	"github.com/sagadana/migrator/pipelines"
+	"github.com/sagadana/migrator/states"
 )
 
 const TempBasePath = "./.test"
@@ -207,10 +208,10 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 			// ------------------------
 
 			migrationTotal := testMigration(t, &ctx, &pipeline, &pipelines.PipelineConfig{
-				ParrallelLoad: 5,
-				BatchSize:     20,
-				MaxSize:       maxSize,
-				StartOffset:   startOffset,
+				ParallelLoad: 5,
+				BatchSize:    20,
+				MaxSize:      maxSize,
+				StartOffset:  startOffset,
 			})
 
 			// --------------------------------------------------------------------
@@ -224,7 +225,7 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 			replicationMaxSize := replicationBatchSize * 2
 
 			testReplication(t, &pipeline, &pipelines.PipelineConfig{
-				ParrallelLoad:              5,
+				ParallelLoad:               5,
 				BatchSize:                  10,
 				MaxSize:                    maxSize,
 				StartOffset:                startOffset,
@@ -281,7 +282,7 @@ func Test_File_To_File_Streaming_Pipeline(t *testing.T) {
 			replicationMaxSize := replicationBatchSize * 2
 
 			testReplication(t, &pipeline, &pipelines.PipelineConfig{
-				ParrallelLoad:              5,
+				ParallelLoad:               5,
 				BatchSize:                  10,
 				MaxSize:                    maxSize,
 				StartOffset:                startOffset,
