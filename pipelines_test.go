@@ -14,8 +14,6 @@ import (
 	"github.com/sagadana/migrator/states"
 )
 
-const TempBasePath = "./.test"
-
 const IDField = "Index"
 const CRUpdateField = "Test_Cr"
 
@@ -29,6 +27,14 @@ const (
 var tests = []StoreType{
 	MemoryStoreType,
 	FileStoreType,
+}
+
+func getTempBasePath() string {
+	basePath := os.Getenv("RUNNER_TEMP")
+	if basePath == "" {
+		basePath = os.TempDir()
+	}
+	return basePath
 }
 
 func getStore(storeType StoreType, basePath string) states.Store {
@@ -182,7 +188,7 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			basePath := filepath.Join(TempBasePath, string(storeType))
+			basePath := filepath.Join(getTempBasePath(), string(storeType))
 			os.RemoveAll(basePath)
 
 			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
@@ -252,7 +258,7 @@ func Test_File_To_File_Streaming_Pipeline(t *testing.T) {
 
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			basePath := filepath.Join(TempBasePath, string(storeType))
+			basePath := filepath.Join(getTempBasePath(), string(storeType))
 			os.RemoveAll(basePath) // Clean up first
 
 			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
