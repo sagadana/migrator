@@ -1,24 +1,16 @@
-module cnc-db-migrate/mongo-redis
+module github.com/sagadana/migrator
 
 go 1.22.4
 
-// go 3.4.10
+require go.mongodb.org/mongo-driver v1.17.1
+
+require golang.org/x/sys v0.23.0 // indirect
 
 require (
-	github.com/joho/godotenv v1.5.1
-	go.mongodb.org/mongo-driver v1.17.1
-)
-
-require (
-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-)
-
-require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/klauspost/compress v1.13.6 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
-	github.com/redis/go-redis/v9 v9.7.0
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect

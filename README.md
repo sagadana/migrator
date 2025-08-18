@@ -1,97 +1,194 @@
-# Database Migration Scripts
+# Migrator
 
-## Description
+High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
 
-Collection of Go scripts to migrate data from one database to another.
-It connects to both databases, retrieves data from the source, transforms it, and then stores it in the destination.
-
-## Script(s)
-
-### [mongo-redis](./mongo-redis)
-
-Migrate from Mongo to Redis
-
-#### Features
+## Features
 
 - Schema transformation
 - Parallel Loading: Break data into chunks and load in parallel
 - Auto Resuming: Resume from last success position if failed
-- Continuous Replication: Recursively check for new changes and replicate them (TODO: Use Change Stream)
+- Continuous Replication: Watch for new changes and replicate them
 
-#### Environment Variables
+## Datasources
 
-The following environment variables are required to run this program:
+| Datasource | Status  |
+| ---------- | ------- |
+| `File`     | Done    |
+| `MongoDB`  | WIP     |
+| `Postgres` | Planned |
+| `<More>`   | Soon    |
 
-| Variable                 | Description                                                              |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `MONGO_DATABASE_NAME`    | Name of the MongoDB database                                             |
-| `MONGO_COLLECTION_NAME`  | Name of the MongoDB collection                                           |
-| `MONGO_ADDR`             | Address of the MongoDB server                                            |
-| `MONGO_USERNAME`         | Username for MongoDB authentication                                      |
-| `MONGO_PASSWORD`         | Password for MongoDB authentication                                      |
-| `MONGO_ID_FIELD`         | Optional: Field to use as the unique identifier. Default is `_id`        |
-| `MONGO_EXCLUDE_ID_FIELD` | Optional: Exclude the `_id` field from the migration. Default is `false` |
-| `REDIS_ADDR`             | Address of the Redis server                                              |
-| `REDIS_USERNAME`         | Username for Redis authentication                                        |
-| `REDIS_PASSWORD`         | Optional: Password for Redis authentication                              |
-| `REDIS_DB`               | Redis database number                                                    |
-| `REDIS_CLUSTER`          | Redis is a cluster                                                       |
-| `PARRALLEL_LOAD`         | Number of parallel loads                                                 |
-| `BATCH_SIZE`             | Number of documents to load in each batch                                |
-| `MAX_SIZE`               | Optional: Maximum number of documents to load                            |
-| `START_OFFSET`           | Optional: Minimum offset to start migration from                         |
-| `CONTINOUS_REPLICATION`  | Optional: Enable continuous replication of new changes. `true/false`     |
+## State Stores
 
-#### Schema Transformation
+_Used for storing replication status_
 
-- Update the `transform.go` file to modify the transformation logic as per your requirements.
-- The `Transform` function is responsible for converting the MongoDB document into the format required by Redis.
+| Datasource | Status  |
+| ---------- | ------- |
+| `Memory`   | Done    |
+| `File`     | Done    |
+| `Redis`    | Planned |
+| `<More>`   | Soon    |
 
-## Set Up
+## Install
 
-1. Install `make`
+`go get github.com/sagadana/migrator/datasources`
 
-```sh
-# MAC
-brew install make
-# Linux
-sudo apt-get install make
-# Windows
-choco install make
+## Usage
+
+### Migration
+
+```go
+
+import (
+	"github.com/sagadana/migrator/datasources"
+	"github.com/sagadana/migrator/pipelines"
+	"github.com/sagadana/migrator/states"
+)
+
+ctx, cancel := context.WithCancel(context.TODO())
+defer cancel()
+
+// Create the `From` datasource _(File Data Source in this example)_
+fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
+// Load data from a CSV if needed
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+if err != nil {
+    panic(err)
+}
+
+// Create the `To` datasource _(File Data Source in this example)_
+toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+
+// Initialize Pipeline
+pipeline := pipelines.Pipeline{
+    ID:    "test-pipeline-1",
+    From:  fromDs,
+    To:    toDs,
+    Store: states.NewFileStateStore("./tests", "state"),
+}
+
+// Start Migration
+err = pipeline.Start(&ctx, pipelines.PipelineConfig{
+    ParallelLoad:               5,
+    BatchSize:                  10,
+
+    OnStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+})
+if err != nil {
+    panic(err)
+}
+
 ```
 
-2. Install dependencies
+### Migration + Continuous Replication
 
-```sh
-make install
+```go
+
+import (
+	"github.com/sagadana/migrator/datasources"
+	"github.com/sagadana/migrator/pipelines"
+	"github.com/sagadana/migrator/states"
+)
+
+ctx, cancel := context.WithCancel(context.TODO())
+defer cancel()
+
+// Create the `From` datasource _(File Data Source in this example)_
+fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
+// Load data from a CSV if needed
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+if err != nil {
+    panic(err)
+}
+
+// Create the `To` datasource _(File Data Source in this example)_
+toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+
+// Initialize Pipeline
+pipeline := pipelines.Pipeline{
+    ID:    "test-pipeline-1",
+    From:  fromDs,
+    To:    toDs,
+    Store: states.NewFileStateStore("./tests", "state"),
+}
+
+// Start Migration + Replication
+err = pipeline.Start(&ctx, pipelines.PipelineConfig{
+    ParallelLoad:               5,
+    BatchSize:                  10,
+    ContinuousReplication:      true,
+    ReplicationBatchSize:       20,
+    ReplicationBatchWindowSecs: 1,
+
+    OnStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+})
+if err != nil {
+    panic(err)
+}
+
 ```
 
-3. Modify the `.env` file in the `<script>` directory with the required environment variables.
+### Continuous Replication Only
 
-## Run
+```go
+import (
+	"github.com/sagadana/migrator/datasources"
+	"github.com/sagadana/migrator/pipelines"
+	"github.com/sagadana/migrator/states"
+)
 
-To execute the program, run the following command in the project directory:
+ctx, cancel := context.WithCancel(context.TODO())
+defer cancel()
 
-**Dev**
+// Create the `From` datasource _(File Data Source in this example)_
+fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
+// Load data from a CSV if needed
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+if err != nil {
+    panic(err)
+}
 
-```sh
-make <script>-dev
+// Create the `To` datasource _(File Data Source in this example)_
+toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+
+// Initialize Pipeline
+pipeline := pipelines.Pipeline{
+    ID:    "test-pipeline-1",
+    From:  fromDs,
+    To:    toDs,
+    Store: states.NewFileStateStore("./tests", "state"),
+}
+
+// Start Replication
+err = pipeline.Stream(&ctx, pipelines.PipelineConfig{
+    ContinuousReplication:      true,
+    ReplicationBatchSize:       20,
+    ReplicationBatchWindowSecs: 1,
+
+    OnStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+})
+if err != nil {
+    panic(err)
+}
+
 ```
 
-**Docker**
+## Test
+
+Run:
 
 ```sh
-make <script>-docker
+go test -v
 ```
 
-## Push (AWS ECR)
-
-This will build the docker image and push it to an ECR repository.
-
-First, sign in to the correct AWS Account
-
-_Note: Ensure that the infrastructure used to run the migration task has the same [cpuArchitecture](https://repost.aws/knowledge-center/ecs-task-exec-format-error) as the your system used to build the image._
+With docker:
 
 ```sh
-make <script>-push-aws
+docker compose up tester
 ```
