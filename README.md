@@ -32,7 +32,7 @@ _Used for storing replication states_
 
 ## Install
 
-`go get github.com/sagadana/migrator/datasources`
+`go get github.com/sagadana/migrator`
 
 ## Usage
 
