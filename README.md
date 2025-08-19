@@ -15,12 +15,13 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 | ---------- | ------- |
 | `File`     | Done    |
 | `MongoDB`  | WIP     |
+| `Redis`    | Planned |
 | `Postgres` | Planned |
 | `<More>`   | Soon    |
 
 ## State Stores
 
-_Used for storing replication status_
+_Used for storing replication states_
 
 | Datasource | Status  |
 | ---------- | ------- |
