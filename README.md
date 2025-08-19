@@ -52,7 +52,7 @@ defer cancel()
 // Create the `From` datasource _(File Data Source in this example)_
 fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
 // Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
 if err != nil {
     panic(err)
 }
@@ -99,7 +99,7 @@ defer cancel()
 // Create the `From` datasource _(File Data Source in this example)_
 fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
 // Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
 if err != nil {
     panic(err)
 }
@@ -152,7 +152,7 @@ defer cancel()
 // Create the `From` datasource _(File Data Source in this example)_
 fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
 // Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" /*batch size*/, 10)
+err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
 if err != nil {
     panic(err)
 }
