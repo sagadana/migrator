@@ -6,14 +6,15 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Run docker compose for datastores
         uses: hoverkraft-tech/compose-action@v2.0.1
         with:
-          compose-file: "./docker/docker-compose.ds.yml"
+          compose-file: "./docker-compose.ds.yml"
 
       - name: Run docker compose for tests
         uses: hoverkraft-tech/compose-action@v2.0.1
         with:
-          compose-file: "./docker/docker-compose.yml"
+          compose-file: "./docker-compose.yml"
