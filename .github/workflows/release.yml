@@ -1,0 +1,21 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*"
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test.yml # use the callable tests job to run tests
+
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ncipollo/release-action@v1
+        with:
+          generateReleaseNotes: true

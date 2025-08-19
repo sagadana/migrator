@@ -1,0 +1,15 @@
+name: test
+
+on: [workflow_call] # allow this workflow to be called from other workflows
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build docker images
+        run: docker build -f ./Dockerfile -t local .
+
+      - name: Run tests
+        run: docker run -i -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
