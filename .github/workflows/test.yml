@@ -3,7 +3,7 @@ name: test
 on: [workflow_call] # allow this workflow to be called from other workflows
 
 jobs:
-  test:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

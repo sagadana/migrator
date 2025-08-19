@@ -5,7 +5,7 @@ on:
     branches: ["alpha"]
 
 jobs:
-  tests:
+  test:
     uses: ./.github/workflows/test.yml # use the callable tests job to run tests
 
   release:
