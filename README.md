@@ -72,9 +72,9 @@ err = pipeline.Start(&ctx, pipelines.PipelineConfig{
     ParallelLoad:               5,
     BatchSize:                  10,
 
-    OnStart:    func() { /* Add your logic. E.g extra logs */ },
-    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+    OnMigrationStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnMigrationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnMigrationComplete:     func(state states.State) { /* Add your logic. E.g extra logs */ },
 })
 if err != nil {
     panic(err)
@@ -122,9 +122,13 @@ err = pipeline.Start(&ctx, pipelines.PipelineConfig{
     ReplicationBatchSize:       20,
     ReplicationBatchWindowSecs: 1,
 
-    OnStart:    func() { /* Add your logic. E.g extra logs */ },
-    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+    OnMigrationStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnMigrationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnMigrationComplete:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+
+    OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
 })
 if err != nil {
     panic(err)
@@ -169,9 +173,9 @@ err = pipeline.Stream(&ctx, pipelines.PipelineConfig{
     ReplicationBatchSize:       20,
     ReplicationBatchWindowSecs: 1,
 
-    OnStart:    func() { /* Add your logic. E.g extra logs */ },
-    OnProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnStop:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+    OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
+    OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+    OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
 })
 if err != nil {
     panic(err)

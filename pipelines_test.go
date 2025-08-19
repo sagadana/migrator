@@ -60,31 +60,34 @@ func testMigration(
 
 	err := pipeline.Start(ctx, *config)
 	if err != nil {
-		t.Errorf("failed to process batch 1 migration: %s", err)
+		t.Errorf("failed to process migration: %s", err)
 	}
 
 	toTotal := pipeline.To.Count(ctx, &datasources.DatasourceFetchRequest{})
 
 	state, ok := pipeline.GetState(ctx)
 	if !ok {
-		t.Errorf("failed to get batch 1 migration state: %s", err)
+		t.Errorf("failed to get migration state: %s", err)
 	}
 
 	migrationTotal, err := state.MigrationTotal.Int64()
 	if err != nil {
-		t.Errorf("failed to get batch 1 migration total: %s", err)
+		t.Errorf("failed to get migration total: %s", err)
 	}
 	migrationOffset, err := state.MigrationOffset.Int64()
 	if err != nil {
-		t.Errorf("failed to get batch 1 migration offset: %s", err)
+		t.Errorf("failed to get migration offset: %s", err)
 	}
 
 	// Ensure all data was migrated
+	if state.MigrationStatus != states.MigrationStatusCompleted {
+		t.Errorf("migration failed. Expected Status: %s, Got %s.", string(states.MigrationStatusCompleted), string(state.MigrationStatus))
+	}
 	if migrationTotal != toTotal {
-		t.Errorf("batch 1 migration failed. Expected Total: %d, Got %d.", toTotal, migrationTotal)
+		t.Errorf("migration failed. Expected Total: %d, Got %d.", toTotal, migrationTotal)
 	}
 	if migrationOffset != config.StartOffset+migrationTotal {
-		t.Errorf("batch 1 migration failed. Expected Offset: %d, Got %d.", config.StartOffset+migrationTotal, migrationOffset)
+		t.Errorf("migration failed. Expected Offset: %d, Got %d.", config.StartOffset+migrationTotal, migrationOffset)
 	}
 
 	return migrationTotal
@@ -93,6 +96,7 @@ func testMigration(
 // Use to test continous replication for a pipeline
 func testReplication(
 	t *testing.T,
+	ctx *context.Context,
 	pipeline *pipelines.Pipeline,
 	config *pipelines.PipelineConfig,
 	replicationOnly bool,
@@ -101,7 +105,7 @@ func testReplication(
 
 	crStart := make(chan bool, 1)
 	crWg := new(sync.WaitGroup)
-	crCtx, crCancel := context.WithTimeout(context.TODO(), time.Duration(5*time.Second))
+	crCtx, crCancel := context.WithTimeout(context.TODO(), time.Duration(10*time.Second))
 
 	// Run background updates
 	crWg.Add(1)
@@ -138,18 +142,23 @@ func testReplication(
 
 	var err error
 	config.ContinuousReplication = true
-	config.OnStop = func(_ states.State) {
-		t.Log("OnStop triggered")
-		crStart <- true // Send event to trigger baground updates
-		close(crStart)
-	}
+
 	if replicationOnly {
+		config.OnReplicationStart = func() {
+			t.Log("OnReplicationStart triggered")
+			crStart <- true // Send event to trigger baground updates
+			close(crStart)
+		}
 		err = pipeline.Stream(&crCtx, *config)
 		if err != nil {
 			t.Errorf("continuous replication failed: %s", err.Error())
 		}
-
 	} else {
+		config.OnMigrationComplete = func(_ states.State) {
+			t.Log("OnMigrationComplete triggered")
+			crStart <- true // Send event to trigger baground updates
+			close(crStart)
+		}
 		err = pipeline.Start(&crCtx, *config)
 		if err != nil {
 			t.Errorf("migration + continuous replication failed: %s", err.Error())
@@ -158,6 +167,15 @@ func testReplication(
 
 	// Wait for background updates to be made
 	crWg.Wait()
+
+	// Ensure replication was stopped gracefuly
+	state, ok := pipeline.GetState(ctx)
+	if !ok {
+		t.Errorf("failed to get replication state: %s", err)
+	}
+	if state.ReplicationStatus != states.ReplicationStatusPaused {
+		t.Errorf("continuous replication failed. Expected Status: %s, Got %s.", string(states.ReplicationStatusPaused), string(state.ReplicationStatus))
+	}
 
 	// Ensure all background changes to source were replicated correctly unto the destination
 	// Fetch items from the destination to datasource to update
@@ -233,7 +251,7 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 			replicationBatchWindowSecs := int64(1)
 			replicationMaxSize := replicationBatchSize * 2
 
-			testReplication(t, &pipeline, &pipelines.PipelineConfig{
+			testReplication(t, &ctx, &pipeline, &pipelines.PipelineConfig{
 				ParallelLoad:               5,
 				BatchSize:                  10,
 				MaxSize:                    maxSize,
@@ -290,7 +308,7 @@ func Test_File_To_File_Streaming_Pipeline(t *testing.T) {
 			replicationBatchWindowSecs := int64(1)
 			replicationMaxSize := replicationBatchSize * 2
 
-			testReplication(t, &pipeline, &pipelines.PipelineConfig{
+			testReplication(t, &ctx, &pipeline, &pipelines.PipelineConfig{
 				ParallelLoad:               5,
 				BatchSize:                  10,
 				MaxSize:                    maxSize,
