@@ -5,17 +5,33 @@ on:
     tags:
       - "v*.*"
 
+permissions:
+  contents: write
+
 jobs:
   test:
     uses: ./.github/workflows/test.yml # use the callable tests job to run tests
 
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: ncipollo/release-action@v1
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          generateReleaseNotes: true
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          # either 'goreleaser' (default) or 'goreleaser-pro'
+          distribution: goreleaser
+          # 'latest', 'nightly', or a semver
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
