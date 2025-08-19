@@ -1,0 +1,44 @@
+# Exclude the .git directory and related files
+.git
+.gitignore
+
+# Exclude editor and IDE-specific files
+*.swp
+*.swo
+*.idea
+.vscode/
+
+# Exclude build artifacts
+*.exe
+*.out
+*.o
+*.a
+*.so
+
+# Exclude Go module cache and vendor directory
+/go
+vendor/
+
+# Exclude binaries
+bin/
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Exclude logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Exclude Docker-related files (optional)
+Dockerfile
+docker-compose.yml
+
+# Exclude test and coverage files
+*.test
+*.cover
+coverage.out
+
+# Exclude any other unnecessary files
+.env
