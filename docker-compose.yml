@@ -1,7 +1,14 @@
 services:
+  # Tester
   tester:
     build:
       context: .
     volumes:
       - .:/usr/src/app
     command: go test -v -o /usr/src/app/app.test
+    networks:
+      - migrator_dev_network
+
+networks:
+  migrator_dev_network:
+    external: true

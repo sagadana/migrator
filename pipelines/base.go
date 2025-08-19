@@ -28,10 +28,10 @@ type PipelineConfig struct {
 
 	OnMigrationStart      func()
 	OnMigrationProgress   func(count MigrateCount)
-	OnMigrationComplete   func(state states.State)
+	OnMigrationStopped    func(state states.State)
 	OnReplicationStart    func()
 	OnReplicationProgress func(count MigrateCount)
-	OnReplicationPause    func(state states.State)
+	OnReplicationStopped  func(state states.State)
 }
 
 type Pipeline struct {
@@ -77,7 +77,7 @@ func (p *Pipeline) handleExit(ctx *context.Context) {
 		if state.MigrationStatus == states.MigrationStatusStarting ||
 			state.MigrationStatus == states.MigrationStatusInProgress {
 			state.MigrationStatus = states.MigrationStatusFailed
-			state.MigrationStopedAt = time.Now()
+			state.MigrationStoppedAt = time.Now()
 			if r := recover(); r != nil {
 				state.MigrationIssue = fmt.Sprintf("Unexpexted Error: %v", r)
 			}
@@ -87,7 +87,7 @@ func (p *Pipeline) handleExit(ctx *context.Context) {
 		if state.ReplicationStatus == states.ReplicationStatusStarting ||
 			state.ReplicationStatus == states.ReplicationStatusStreaming {
 			state.ReplicationStatus = states.ReplicationStatusPaused
-			state.ReplicatiOnMigrationCompleteedAt = time.Now()
+			state.ReplicatiOnMigrationStoppededAt = time.Now()
 			if r := recover(); r != nil {
 				state.ReplicationIssue = fmt.Sprintf("Unexpexted Error: %v", r)
 			}
@@ -255,19 +255,25 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	if err != nil {
 		state.ReplicationStatus = states.ReplicationStatusFailed
 		state.ReplicationIssue = err.Error()
-		state.ReplicatiOnMigrationCompleteedAt = time.Now()
+		state.ReplicatiOnMigrationStoppededAt = time.Now()
 		p.setState(ctx, state)
+
+		log.Printf("Replication Failed: %s", state.ReplicationIssue)
+		if config.OnReplicationStopped != nil {
+			go config.OnReplicationStopped(state)
+		}
+
 		return err
 	}
 
 	// Track: Paused
 	state.ReplicationStatus = states.ReplicationStatusPaused
-	state.ReplicatiOnMigrationCompleteedAt = time.Now()
+	state.ReplicatiOnMigrationStoppededAt = time.Now()
 	p.setState(ctx, state)
 
 	log.Printf("Replication Paused")
-	if config.OnReplicationPause != nil {
-		go config.OnReplicationPause(state)
+	if config.OnReplicationStopped != nil {
+		go config.OnReplicationStopped(state)
 	}
 
 	return nil
@@ -343,19 +349,25 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 			if err != nil {
 				state.ReplicationStatus = states.ReplicationStatusFailed
 				state.ReplicationIssue = err.Error()
-				state.ReplicatiOnMigrationCompleteedAt = time.Now()
+				state.ReplicatiOnMigrationStoppededAt = time.Now()
 				p.setState(ctx, state)
+
+				log.Printf("Replication Failed: %s", state.ReplicationIssue)
+				if config.OnReplicationStopped != nil {
+					go config.OnReplicationStopped(state)
+				}
+
 				return
 			}
 
 			// Track: Paused
 			state.ReplicationStatus = states.ReplicationStatusPaused
-			state.ReplicatiOnMigrationCompleteedAt = time.Now()
+			state.ReplicatiOnMigrationStoppededAt = time.Now()
 			p.setState(ctx, state)
 
 			log.Printf("Replication Paused")
-			if config.OnReplicationPause != nil {
-				go config.OnReplicationPause(state)
+			if config.OnReplicationStopped != nil {
+				go config.OnReplicationStopped(state)
 			}
 		}()
 
@@ -418,19 +430,25 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	if err != nil {
 		state.MigrationStatus = states.MigrationStatusFailed
 		state.MigrationIssue = err.Error()
-		state.MigrationStopedAt = time.Now()
+		state.MigrationStoppedAt = time.Now()
 		p.setState(ctx, state)
+
+		log.Printf("Migration Failed: %s", state.MigrationIssue)
+		if config.OnMigrationStopped != nil {
+			go config.OnMigrationStopped(state)
+		}
+
 		return err
 	}
 
 	// Track: Success
 	state.MigrationStatus = states.MigrationStatusCompleted
-	state.MigrationStopedAt = time.Now()
+	state.MigrationStoppedAt = time.Now()
 	p.setState(ctx, state)
 
 	log.Printf("Migration Completed. Total: %s, Offset: %s", state.MigrationTotal, state.MigrationOffset)
-	if config.OnMigrationComplete != nil {
-		go config.OnMigrationComplete(state)
+	if config.OnMigrationStopped != nil {
+		go config.OnMigrationStopped(state)
 	}
 
 	return nil

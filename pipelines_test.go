@@ -12,6 +12,7 @@ import (
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/pipelines"
 	"github.com/sagadana/migrator/states"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const IDField = "Index"
@@ -34,7 +35,8 @@ func getTempBasePath() string {
 	if basePath == "" {
 		basePath = os.Getenv("TEMP_BASE_PATH")
 		if basePath == "" {
-			basePath = os.TempDir()
+			// basePath = os.TempDir()
+			basePath = "./.test"
 		}
 	}
 	return basePath
@@ -132,7 +134,7 @@ func testReplication(
 			Updates: updates,
 		})
 		if err != nil {
-			t.Error("Failed to perform background updates")
+			t.Errorf("Failed to perform background updates: %s", err.Error())
 		}
 
 		// Wait for replication batch window before ending
@@ -154,8 +156,8 @@ func testReplication(
 			t.Errorf("continuous replication failed: %s", err.Error())
 		}
 	} else {
-		config.OnMigrationComplete = func(_ states.State) {
-			t.Log("OnMigrationComplete triggered")
+		config.OnMigrationStopped = func(_ states.State) {
+			t.Log("OnMigrationStopped triggered")
 			crStart <- true // Send event to trigger baground updates
 			close(crStart)
 		}
@@ -209,16 +211,20 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			basePath := filepath.Join(getTempBasePath(), string(storeType))
+			basePath := filepath.Join(getTempBasePath(), "Test_File_To_File_Migration_Pipeline", string(storeType))
 			os.RemoveAll(basePath)
 
 			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
-			err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv", 10)
+			defer fromDs.Clear(&ctx) // Clear data after testing
+
+			toDs := datasources.NewFileDatasource(basePath, "test-to-customers", IDField)
+			defer toDs.Clear(&ctx) // Clear data after testing
+
+			// Load sample data into source
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
-
-			toDs := datasources.NewFileDatasource(basePath, "test-to-customers", IDField)
 
 			pipeline := pipelines.Pipeline{
 				ID:    "test-pipeline-1",
@@ -279,16 +285,183 @@ func Test_File_To_File_Streaming_Pipeline(t *testing.T) {
 
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			basePath := filepath.Join(getTempBasePath(), string(storeType))
+			basePath := filepath.Join(getTempBasePath(), "Test_File_To_File_Streaming_Pipeline", string(storeType))
 			os.RemoveAll(basePath) // Clean up first
 
 			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
-			err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv", 10)
+			defer fromDs.Clear(&ctx) // Clear data after testing
+
+			toDs := datasources.NewFileDatasource(basePath, "test-to-customers", IDField)
+			defer toDs.Clear(&ctx) // Clear data after testing
+
+			// Load sample data into source
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
 
-			toDs := datasources.NewFileDatasource(basePath, "test-to-customers", IDField)
+			pipeline := pipelines.Pipeline{
+				ID:    "test-pipeline-1",
+				From:  fromDs,
+				To:    toDs,
+				Store: getStore(storeType, basePath),
+			}
+
+			maxSize := int64(10)
+			startOffset := int64(20)
+
+			// ----------------------------
+			// Continuous replication
+			// ----------------------------
+
+			replicationBatchSize := int64(5)
+			replicationBatchWindowSecs := int64(1)
+			replicationMaxSize := replicationBatchSize * 2
+
+			testReplication(t, &ctx, &pipeline, &pipelines.PipelineConfig{
+				ParallelLoad:               5,
+				BatchSize:                  10,
+				MaxSize:                    maxSize,
+				StartOffset:                startOffset,
+				ContinuousReplication:      true,
+				ReplicationBatchSize:       replicationBatchSize,
+				ReplicationBatchWindowSecs: replicationBatchWindowSecs,
+			}, true, replicationMaxSize)
+
+			fmt.Println("---------------------------------------------------------------------------------")
+		})
+	}
+}
+
+// ------------------------------------------
+// File to File Migration & Streaming
+// ------------------------------------------
+
+func Test_File_To_Mongo_Migration_Pipeline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(60)*time.Second)
+	defer func() {
+		time.Sleep(1 * time.Second) // Wait for logs
+		cancel()
+	}()
+
+	// Run tests for different state store types
+	for _, storeType := range tests {
+		t.Run(string(storeType), func(t *testing.T) {
+
+			fmt.Println("---------------------------------------------------------------------------------")
+
+			basePath := filepath.Join(getTempBasePath(), "Test_File_To_Mongo_Migration_Pipeline", string(storeType))
+			os.RemoveAll(basePath)
+
+			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
+			defer fromDs.Clear(&ctx) // Clear data after testing
+
+			toDs := datasources.NewMongoDatasource(
+				&ctx,
+				datasources.MongoDatasourceConfigs{
+					Uri:            "mongodb://admin:admin123@mongo:27017/?directConnection=true",
+					DatabaseName:   "test-to-db",
+					CollectionName: "test-to",
+					Filter:         map[string]any{},
+					Sort:           map[string]any{},
+					OnInit: func(client *mongo.Client) error {
+						return nil
+					},
+				},
+			)
+			defer toDs.Clear(&ctx) // Clear data after testing
+
+			// Load sample data into source
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			if err != nil {
+				t.Errorf("failed to load data from CSV: %s", err)
+			}
+
+			pipeline := pipelines.Pipeline{
+				ID:    "test-pipeline-1",
+				From:  fromDs,
+				To:    toDs,
+				Store: getStore(storeType, basePath),
+			}
+
+			maxSize := int64(30)
+			startOffset := int64(20)
+
+			// ------------------------
+			// 1. First migration
+			// ------------------------
+
+			migrationTotal := testMigration(t, &ctx, &pipeline, &pipelines.PipelineConfig{
+				ParallelLoad: 5,
+				BatchSize:    20,
+				MaxSize:      maxSize,
+				StartOffset:  startOffset,
+			})
+
+			// --------------------------------------------------------------------
+			// 2. Second migration (with continuous replication enabled)
+			// --------------------------------------------------------------------
+
+			maxSize = 20
+			startOffset += migrationTotal
+			replicationBatchSize := int64(5)
+			replicationBatchWindowSecs := int64(1)
+			replicationMaxSize := replicationBatchSize * 2
+
+			testReplication(t, &ctx, &pipeline, &pipelines.PipelineConfig{
+				ParallelLoad:               5,
+				BatchSize:                  10,
+				MaxSize:                    maxSize,
+				StartOffset:                startOffset,
+				ContinuousReplication:      true,
+				ReplicationBatchSize:       replicationBatchSize,
+				ReplicationBatchWindowSecs: replicationBatchWindowSecs,
+			}, false, replicationMaxSize)
+
+			fmt.Println("---------------------------------------------------------------------------------")
+		})
+	}
+}
+
+func Test_File_To_Mongo_Streaming_Pipeline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(60)*time.Second)
+	defer func() {
+		time.Sleep(1 * time.Second) // Wait for logs
+		cancel()
+	}()
+
+	// Run tests for different state store types
+	for _, storeType := range tests {
+		t.Run(string(storeType), func(t *testing.T) {
+
+			fmt.Println("---------------------------------------------------------------------------------")
+
+			basePath := filepath.Join(getTempBasePath(), "Test_File_To_Mongo_Migration_Pipeline", string(storeType))
+			os.RemoveAll(basePath)
+
+			fromDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
+			defer fromDs.Clear(&ctx) // Clear data after testing
+
+			toDs := datasources.NewMongoDatasource(
+				&ctx,
+				datasources.MongoDatasourceConfigs{
+					Uri:            "mongodb://admin:admin123@mongo:27017/?directConnection=true",
+					DatabaseName:   "test-to-db",
+					CollectionName: "test-to",
+					Filter:         map[string]any{},
+					Sort:           map[string]any{},
+					OnInit: func(client *mongo.Client) error {
+						return nil
+					},
+				},
+			)
+			defer toDs.Clear(&ctx) // Clear data after testing
+
+			// Load sample data into source
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			if err != nil {
+				t.Errorf("failed to load data from CSV: %s", err)
+			}
 
 			pipeline := pipelines.Pipeline{
 				ID:    "test-pipeline-1",

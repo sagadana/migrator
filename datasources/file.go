@@ -163,37 +163,6 @@ func (ds *FileDatasource) buildIndex() error {
 	return ds.saveIndex()
 }
 
-// Load content of CSV file into datasource
-func (ds *FileDatasource) LoadCSV(ctx *context.Context, path string, batchSize int64) error {
-	result, err := helpers.StreamCSV(path, batchSize)
-	if err != nil {
-		return err
-	}
-
-	for data := range result {
-		bytes, err := json.Marshal(data)
-		if err != nil {
-			return err
-		}
-
-		converted := []map[string]any{}
-		err = json.Unmarshal(bytes, &converted)
-		if err != nil {
-			return err
-		}
-
-		err = ds.Push(ctx, &DatasourcePushRequest{
-			Inserts: converted,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	log.Printf("File datasource '%s' synced %d records from CSV", ds.collectionName, len(ds.index))
-	return nil
-}
-
 // --- Datasource Interface Implementation ---
 
 // Init sets up the datasource by creating the collection directory and loading/building the index.
@@ -435,4 +404,20 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 	}
 
 	return out
+}
+
+// Clear data source
+func (ds *FileDatasource) Clear(ctx *context.Context) error {
+	err := os.RemoveAll(ds.collectionPath)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(ds.indexPath)
+	if err != nil {
+		return err
+	}
+	ds.index = make(map[string]string)
+	ds.indexKeys = make([]string, 0)
+
+	return nil
 }

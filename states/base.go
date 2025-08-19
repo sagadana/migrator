@@ -28,12 +28,12 @@ type State struct {
 	MigrationOffset             json.Number         `json:"migration_offset"`
 	MigrationIssue              string              `json:"migration_issue"`
 	MigratiOnMigrationStartedAt time.Time           `json:"migration_started_at"`
-	MigrationStopedAt           time.Time           `json:"migration_stoped_at"`
+	MigrationStoppedAt          time.Time           `json:"migration_Stopped_at"`
 
-	ReplicationStatus                ReplicationStatusType `json:"replication_status"`
-	ReplicationIssue                 string                `json:"replication_issue"`
-	ReplicatiOnMigrationStartedAt    time.Time             `json:"replication_started_at"`
-	ReplicatiOnMigrationCompleteedAt time.Time             `json:"replication_stoped_at"`
+	ReplicationStatus               ReplicationStatusType `json:"replication_status"`
+	ReplicationIssue                string                `json:"replication_issue"`
+	ReplicatiOnMigrationStartedAt   time.Time             `json:"replication_started_at"`
+	ReplicatiOnMigrationStoppededAt time.Time             `json:"replication_Stopped_at"`
 }
 
 type Store interface {
