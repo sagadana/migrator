@@ -32,13 +32,14 @@ _Used for storing replication states_
 
 ## Install
 
-`go get github.com/sagadana/migrator`
+`go get github.com/sagadana/migrator/datasources`
 
 ## Usage
 
 ### Migration
 
 ```go
+package main
 
 import (
 	"github.com/sagadana/migrator/datasources"
@@ -46,39 +47,43 @@ import (
 	"github.com/sagadana/migrator/states"
 )
 
-ctx, cancel := context.WithCancel(context.TODO())
-defer cancel()
+func main() {
 
-// Create the `From` datasource _(File Data Source in this example)_
-fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
-// Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
-if err != nil {
-    panic(err)
-}
+    ctx, cancel := context.WithCancel(context.TODO())
+    defer cancel()
 
-// Create the `To` datasource _(File Data Source in this example)_
-toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+    // Create the `From` datasource _(File Data Source in this example)_
+    fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
+    // Load data from a CSV if needed
+    err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv", /*batch size*/ 10)
+    if err != nil {
+        panic(err)
+    }
 
-// Initialize Pipeline
-pipeline := pipelines.Pipeline{
-    ID:    "test-pipeline-1",
-    From:  fromDs,
-    To:    toDs,
-    Store: states.NewFileStateStore("./tests", "state"),
-}
+    // Create the `To` datasource _(File Data Source in this example)_
+    toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
 
-// Start Migration
-err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-    ParallelLoad:               5,
-    BatchSize:                  10,
+    // Initialize Pipeline
+    pipeline := pipelines.Pipeline{
+        ID:    "test-pipeline-1",
+        From:  fromDs,
+        To:    toDs,
+        Store: states.NewFileStateStore("./tests", "state"),
+    }
 
-    OnMigrationStart:    	func() { /* Add your logic. E.g extra logs */ },
-    OnMigrationProgress: 	func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
-})
-if err != nil {
-    panic(err)
+    // Start Migration + Replication
+    err = pipeline.Start(&ctx, pipelines.PipelineConfig{
+        ParallelLoad:               5,
+        BatchSize:                  10,
+
+        OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
+        OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+    })
+    if err != nil {
+        panic(err)
+    }
+
 }
 
 ```
@@ -87,52 +92,29 @@ if err != nil {
 
 ```go
 
-import (
-	"github.com/sagadana/migrator/datasources"
-	"github.com/sagadana/migrator/pipelines"
-	"github.com/sagadana/migrator/states"
-)
+func main() {
 
-ctx, cancel := context.WithCancel(context.TODO())
-defer cancel()
+    // .... (init codes)
 
-// Create the `From` datasource _(File Data Source in this example)_
-fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
-// Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
-if err != nil {
-    panic(err)
-}
+    // Start Migration + Replication
+    err = pipeline.Start(&ctx, pipelines.PipelineConfig{
+        ParallelLoad:               5,
+        BatchSize:                  10,
+        ContinuousReplication:      true,
+        ReplicationBatchSize:       20,
+        ReplicationBatchWindowSecs: 1,
 
-// Create the `To` datasource _(File Data Source in this example)_
-toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+        OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
+        OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
 
-// Initialize Pipeline
-pipeline := pipelines.Pipeline{
-    ID:    "test-pipeline-1",
-    From:  fromDs,
-    To:    toDs,
-    Store: states.NewFileStateStore("./tests", "state"),
-}
-
-// Start Migration + Replication
-err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-    ParallelLoad:               5,
-    BatchSize:                  10,
-    ContinuousReplication:      true,
-    ReplicationBatchSize:       20,
-    ReplicationBatchWindowSecs: 1,
-
-    OnMigrationStart:    	func() { /* Add your logic. E.g extra logs */ },
-    OnMigrationProgress: 	func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
-
-    OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
-    OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
-})
-if err != nil {
-    panic(err)
+        OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
+        OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+    })
+    if err != nil {
+        panic(err)
+    }
 }
 
 ```
@@ -140,46 +122,24 @@ if err != nil {
 ### Continuous Replication Only
 
 ```go
-import (
-	"github.com/sagadana/migrator/datasources"
-	"github.com/sagadana/migrator/pipelines"
-	"github.com/sagadana/migrator/states"
-)
 
-ctx, cancel := context.WithCancel(context.TODO())
-defer cancel()
+func main() {
 
-// Create the `From` datasource _(File Data Source in this example)_
-fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
-// Load data from a CSV if needed
-err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv" , /*batch size*/ 10)
-if err != nil {
-    panic(err)
-}
+    // .... (init codes)
 
-// Create the `To` datasource _(File Data Source in this example)_
-toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+    // Start Replication
+    err = pipeline.Stream(&ctx, pipelines.PipelineConfig{
+        ContinuousReplication:      true,
+        ReplicationBatchSize:       20,
+        ReplicationBatchWindowSecs: 1,
 
-// Initialize Pipeline
-pipeline := pipelines.Pipeline{
-    ID:    "test-pipeline-1",
-    From:  fromDs,
-    To:    toDs,
-    Store: states.NewFileStateStore("./tests", "state"),
-}
-
-// Start Replication
-err = pipeline.Stream(&ctx, pipelines.PipelineConfig{
-    ContinuousReplication:      true,
-    ReplicationBatchSize:       20,
-    ReplicationBatchWindowSecs: 1,
-
-    OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
-    OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-    OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
-})
-if err != nil {
-    panic(err)
+        OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
+        OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+    })
+    if err != nil {
+        panic(err)
+    }
 }
 
 ```
