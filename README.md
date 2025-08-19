@@ -146,14 +146,6 @@ func main() {
 
 ## Test
 
-Run:
-
-```sh
-go test -v
-```
-
-With docker:
-
 ```sh
 docker compose up tester
 ```
