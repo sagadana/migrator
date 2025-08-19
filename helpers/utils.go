@@ -61,7 +61,7 @@ func ParallelRead[T any](
 	// Create parallel job channels
 	jobs := make(chan int)
 	out := make(chan T)
-	var wg sync.WaitGroup
+	wg := new(sync.WaitGroup)
 
 	// Create parallel workers
 	for range chunks {

@@ -1,6 +1,6 @@
 module github.com/sagadana/migrator
 
-go 1.22.4
+go 1.23
 
 require go.mongodb.org/mongo-driver v1.17.1
 
