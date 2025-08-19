@@ -7,8 +7,51 @@ services:
       - .:/usr/src/app
     command: go test -v -o /usr/src/app/app.test
     networks:
-      - migrator_dev_network
+      - dev_network
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Redis
+  redis:
+    image: "redis:latest"
+    restart: unless-stopped
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
+    environment:
+      - REDIS_REPLICATION_MODE=master
+      - REDIS_PASSWORD=''
+    networks:
+      - dev_network
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # MongoDB
+  mongo:
+    image: "mongo:latest"
+    restart: unless-stopped
+    expose:
+      - 27017
+    ports:
+      - 27017:27017
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    networks:
+      - dev_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
-  migrator_dev_network:
-    external: true
+  dev_network:
+    driver: bridge

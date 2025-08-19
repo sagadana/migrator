@@ -12,7 +12,5 @@ jobs:
       - name: Run docker compose
         uses: hoverkraft-tech/compose-action@v2.0.1
         with:
-          compose-file: |
-            ./docker-compose.ds.yml
-            ./docker-compose.yml
+          compose-file: ./docker-compose.yml
           up-flags: "--abort-on-container-exit"
