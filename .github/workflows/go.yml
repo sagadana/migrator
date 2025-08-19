@@ -15,13 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: "1.23"
+      - name: Build docker images
+        run: docker build -f .Dockerfile -t local
 
-      - name: Build
-        run: go build -v ./...
-
-      - name: Test
-        run: TEMP_BASE_PATH="${{ runner.temp }}" go test -v ./...
+      - name: Run tests
+        run: docker run -it -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
