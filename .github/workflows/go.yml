@@ -19,4 +19,4 @@ jobs:
         run: docker build -f ./Dockerfile -t local .
 
       - name: Run tests
-        run: docker run -it -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
+        run: docker run -i -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
