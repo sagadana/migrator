@@ -329,10 +329,10 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 		for {
 			select {
 			case <-bgCtx.Done():
+				log.Printf("---------- Canceled File Watcher ------------")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
-				out <- DatasourceStreamResult{
-					Err:  bgCtx.Err(),
-					Docs: batch,
+				if len(batch.Inserts) > 0 || len(batch.Updates) > 0 || len(batch.Deletes) > 0 {
+					out <- DatasourceStreamResult{Docs: batch}
 				}
 				return
 

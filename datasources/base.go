@@ -31,7 +31,6 @@ type DatasourceFetchResult struct {
 	End   int64
 }
 type DatasourceStreamResult struct {
-	DatasourceFetchResult
 	Err  error
 	Docs DatasourcePushRequest
 }

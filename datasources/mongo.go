@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -13,12 +14,16 @@ import (
 const MongoIDField = "_id"
 
 type MongoDatasourceConfigs struct {
-	Uri            string
+	URI            string
 	DatabaseName   string
 	CollectionName string
-	Filter         map[string]any
-	Sort           map[string]any
 
+	Filter map[string]any
+	Sort   map[string]any
+
+	// Provide custom mongo client
+	WithClient func(ctx *context.Context, uri string) (*mongo.Client, error)
+	// Perform actions on init
 	OnInit func(client *mongo.Client) error
 }
 
@@ -33,17 +38,30 @@ type MongoDatasource struct {
 }
 
 // Connect to MongoDB
-func ConnectToMongoDB(ctx *context.Context, uri string) *mongo.Client {
-	clientOptions := options.Client().ApplyURI(uri)
+func ConnectToMongoDB(ctx *context.Context, config MongoDatasourceConfigs) *mongo.Client {
+
+	// Try custom client
+	if config.WithClient != nil {
+		client, err := config.WithClient(ctx, config.URI)
+		if err != nil {
+			panic(err)
+		}
+		return client
+	}
+
+	clientOptions := options.Client().ApplyURI(config.URI)
 	clientOptions.SetConnectTimeout(10 * time.Second)
+
 	client, err := mongo.Connect(*ctx, clientOptions)
 	if err != nil {
 		panic(err)
 	}
+
 	err = client.Ping(*ctx, nil)
 	if err != nil {
 		panic(err)
 	}
+
 	return client
 }
 
@@ -66,7 +84,7 @@ func NewMongoDatasource(ctx *context.Context,
 	}
 
 	ds := &MongoDatasource{
-		client:         ConnectToMongoDB(ctx, config.Uri),
+		client:         ConnectToMongoDB(ctx, config),
 		databaseName:   config.DatabaseName,
 		collectionName: config.CollectionName,
 		filter:         mongoFilter,
@@ -198,15 +216,17 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 	batchWindow := max(request.BatchWindowSeconds, 1)
 
 	go func(bgCtx context.Context) {
+		defer close(out)
+
 		// Options for the change stream.
 		// MaxAwaitTime tells the server how long to wait for new data before returning an empty batch.
 		// This helps prevent the stream.Next() call from blocking indefinitely and allows our time window to function.
 		// We set it to our batch window duration for alignment.
 		streamOpts := options.ChangeStream().
 			SetFullDocument(options.UpdateLookup).
-			SetMaxAwaitTime(time.Duration(request.BatchWindowSeconds))
+			SetMaxAwaitTime(time.Duration(batchWindow) * time.Second)
 
-		// Can be set to nil to watch all changes.
+		// Watch all changes for insert, update, delete
 		pipeline := mongo.Pipeline{
 			bson.D{{
 				Key: "$match",
@@ -224,7 +244,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		stream, err := collection.Watch(bgCtx, pipeline, streamOpts)
 		if err != nil {
 			out <- DatasourceStreamResult{
-				Err:  err,
+				Err:  fmt.Errorf("mongodb watch error: '%s", err.Error()),
 				Docs: DatasourcePushRequest{},
 			}
 			return
@@ -284,60 +304,49 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 			}
 		}
 
+		log.Printf("Watching collection '%s' for changes...", ds.collectionName)
+		// Use a select statement to handle multiple concurrent events:
+		// 1. A new change event arrives.
+		// 2. The batch time window expires (ticker fires).
+		// 3. The context is cancelled (e.g., application shutdown).
 		for {
-			// Use a select statement to handle multiple concurrent events:
-			// 1. A new change event arrives.
-			// 2. The batch time window expires (ticker fires).
-			// 3. The context is cancelled (e.g., application shutdown).
 			select {
 			case <-bgCtx.Done():
+				log.Printf("---------- Canceled Mongo Change Stream ------------")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
-				out <- DatasourceStreamResult{
-					Err:  bgCtx.Err(),
-					Docs: processEvents(batch),
+				if len(batch) > 0 {
+					out <- DatasourceStreamResult{Docs: processEvents(batch)}
 				}
 				return
 
 			case <-ticker.C:
-				// Time window has elapsed. Process the batch if it's not empty.
 				if len(batch) > 0 {
 					out <- DatasourceStreamResult{
 						Docs: processEvents(batch),
 					}
-					// Reset the batch buffer
 					batch = make([]map[string]any, 0, batchSize)
 				}
 
 			default:
-				// Check for the next event from the change stream.
-				// Pass a short-lived context to TryNext to avoid blocking the select loop for too long.
-				// This makes the loop more responsive to ticker events and context cancellation.
 				var event map[string]any
-				if stream.Next(bgCtx) {
+				// Use a short-lived context for TryNext to avoid blocking
+				tryCtx, cancel := context.WithTimeout(bgCtx, 100*time.Millisecond)
+				hasNext := stream.TryNext(tryCtx)
+				cancel()
+				if hasNext {
 					if err := stream.Decode(&event); err != nil {
 						event = map[string]any{}
 					}
 					batch = append(batch, event)
 
-					// If batch is full, process it immediately.
+					// Send if batch size reached
 					if len(batch) >= int(batchSize) {
 						out <- DatasourceStreamResult{
 							Docs: processEvents(batch),
 						}
-
-						// Reset the batch buffer and the ticker
 						batch = make([]map[string]any, 0, batchSize)
 						ticker.Reset(time.Duration(batchWindow) * time.Second)
 					}
-				}
-
-				// Check for any errors on the stream itself
-				if err := stream.Err(); err != nil {
-					out <- DatasourceStreamResult{
-						Err:  fmt.Errorf("mongodb error: change stream failed: %w", err),
-						Docs: DatasourcePushRequest{},
-					}
-					return
 				}
 			}
 		}

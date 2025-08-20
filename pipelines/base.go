@@ -31,15 +31,28 @@ type PipelineConfig struct {
 	OnMigrationProgress   func(count MigrateCount)
 	OnMigrationStopped    func(state states.State)
 	OnReplicationStart    func()
+	OnReplicationError    func(err error)
 	OnReplicationProgress func(count MigrateCount)
 	OnReplicationStopped  func(state states.State)
 }
 
 type Pipeline struct {
-	ID        string
-	Store     states.Store
-	From      datasources.Datasource
-	To        datasources.Datasource
+	ID    string
+	Store states.Store
+	From  datasources.Datasource
+	To    datasources.Datasource
+	// Use this the convert the JSON data to a different JSON formatted output
+	// TODO: For other datasources like redis that wouldnlt always use JSON,
+	// use a dedicated Struct to manage the transformation back and forth.
+	// E.g: ```go
+	// type RedisTransformer struct {
+	// 	strings    map[string]string
+	// 	lists      [][]string
+	// 	sets       map[string][]string
+	// 	hashes     map[string]map[string]string
+	// 	sortedSets map[string][]map[string]float64
+	// }
+	// ````
 	Transform func(data map[string]any) (map[string]any, error)
 }
 
@@ -196,6 +209,11 @@ func (p *Pipeline) replicate(
 
 	// Parse destination input from stream
 	input := helpers.StreamTransform(watcher, func(data datasources.DatasourceStreamResult) datasources.DatasourcePushRequest {
+		if data.Err != nil {
+			if config.OnReplicationError != nil {
+				go config.OnReplicationError(data.Err)
+			}
+		}
 		return data.Docs
 	})
 

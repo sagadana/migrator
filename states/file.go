@@ -3,6 +3,7 @@ package states
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,15 +36,13 @@ func (sm *FileStore[V]) Store(ctx *context.Context, key string, value V) error {
 	// To JSON
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		log.Printf("error marshaling state: Error: %v", err)
-		return err
+		return fmt.Errorf("error marshaling state: Error: %w", err)
 	}
 	// Save to file
 	path := sm.getFullPath(key)
 	err = os.WriteFile(path, data, sm.mode)
 	if err != nil {
-		log.Printf("error saving state file: %s. Error: %v", path, err)
-		return err
+		return fmt.Errorf("error saving state file: %s. Error: %w", path, err)
 	}
 	return nil
 }
@@ -57,14 +56,14 @@ func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("error reading state file: %s. Error: %v", path, err)
+			log.Printf("Error reading state file: %s. Error: %v", path, err)
 		}
 		return value, false
 	}
 	// Parse JSON
 	var result V
 	if err := json.Unmarshal(data, &result); err != nil {
-		log.Printf("error unmarshaling state file: %s. Error: %v", path, err)
+		log.Printf("Error unmarshaling state file: %s. Error: %v", path, err)
 		return value, false
 	}
 	return result, true
@@ -75,8 +74,7 @@ func (sm *FileStore[V]) Delete(ctx *context.Context, key string) error {
 	path := sm.getFullPath(key)
 	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
-		log.Printf("error deleting state file: %s. Error: %v", path, err)
-		return err
+		return fmt.Errorf("error deleting state file: %s. Error: %v", path, err)
 	}
 	return nil
 }

@@ -11,13 +11,13 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Datasources
 
-| Datasource | Status  |
-| ---------- | ------- |
+| Datasource | Status  | Notes                                                                  |
+| ---------- | ------- | ---------------------------------------------------------------------- |
 | `File`     | Done    |
-| `MongoDB`  | Done    |
-| `Redis`    | WIP     |
-| `Postgres` | Planned |
-| `<More>`   | Soon    |
+| `MongoDB`  | Done    | _Continuous Replication only available for replica set / cluster mode_ |
+| `Redis`    | WIP     |                                                                        |
+| `Postgres` | Planned |                                                                        |
+| `<More>`   | Soon    |                                                                        |
 
 ## State Stores
 
@@ -100,7 +100,7 @@ func main() {
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
         MigrationParallelLoad:      5,
         MigrationBatchSize:         10,
-        
+
         ContinuousReplication:      true,
         ReplicationBatchSize:       20,
         ReplicationBatchWindowSecs: 1,
@@ -111,6 +111,7 @@ func main() {
 
         OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
         OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:    func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:  func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
@@ -136,6 +137,7 @@ func main() {
 
         OnReplicationStart:     func() { /* Add your logic. E.g extra logs */ },
         OnReplicationProgress:  func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
@@ -148,5 +150,5 @@ func main() {
 ## Test
 
 ```sh
-docker compose up tester
+docker compose --env-file ./tests/.env  up tester
 ```

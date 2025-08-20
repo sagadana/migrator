@@ -2,19 +2,26 @@ services:
   # Tester
   tester:
     build:
-      context: .
+      context: ./Dockerfile
     volumes:
       - .:/usr/src/app
     command: go test -v -o /usr/src/app/app.test
     networks:
-      - dev_network
+      - dev-network
+    env_file:
+      - ./tests/.env
     depends_on:
+      mongo-init:
+        condition: service_started
       mongo:
         condition: service_healthy
       redis:
         condition: service_healthy
 
+  # ---------------------
   # Redis
+  # ---------------------
+
   redis:
     image: "redis:latest"
     restart: unless-stopped
@@ -26,14 +33,18 @@ services:
       - REDIS_REPLICATION_MODE=master
       - REDIS_PASSWORD=''
     networks:
-      - dev_network
+      - dev-network
     healthcheck:
       test: redis-cli ping
       interval: 10s
       timeout: 5s
       retries: 3
 
-  # MongoDB
+  # -----------------------------------
+  # MongoDB (replica set)
+  # -----------------------------------
+
+  # MongoDb Primary Replica
   mongo:
     image: "mongo:latest"
     restart: unless-stopped
@@ -42,16 +53,45 @@ services:
     ports:
       - 27017:27017
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=admin123
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_INITDB_DATABASE=${MONGO_DB}
     networks:
-      - dev_network
+      - dev-network
+    volumes:
+      - ./tests/mongo/replica.key:/data/replica.key
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh
+      test: >
+        mongosh --host localhost --quiet --eval 
+        "try { rs.status().ok } catch (e) { 0 }"
       interval: 10s
       timeout: 5s
       retries: 3
+    entrypoint:
+      - bash
+      - -c
+      - |
+        chmod 400 /data/replica.key
+        chown 999 /data/replica.key
+        exec docker-entrypoint.sh $$@
+    command: mongod --bind_ip_all --replSet defaultReplicaSet --keyFile /data/replica.key
+  # MongoDb Replica-Set Initializer
+  mongo-init:
+    image: "mongo:latest"
+    restart: "no"
+    depends_on:
+      - mongo
+    networks:
+      - dev-network
+    command: |
+      mongosh --host mongo:27017 --username $MONGO_USER --password $MONGO_PASS --authenticationDatabase admin --eval "rs.initiate({
+        _id: \"defaultReplicaSet\",
+        members: [
+          // TODO: Add more replicas here ...
+          {_id: 0, host: \"mongo:27017\", priority: 2 }
+        ]
+      })"
 
 networks:
-  dev_network:
+  dev-network:
     driver: bridge
