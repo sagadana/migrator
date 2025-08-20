@@ -2,7 +2,7 @@ services:
   # Tester
   tester:
     build:
-      context: ./Dockerfile
+      context: .
     volumes:
       - .:/usr/src/app
     command: go test -v -o /usr/src/app/app.test
