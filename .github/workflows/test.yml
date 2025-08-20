@@ -14,4 +14,4 @@ jobs:
         with:
           compose-file: ./docker-compose.yml
           compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--abort-on-container-exit"
+          services: "tester"
