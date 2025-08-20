@@ -14,4 +14,5 @@ jobs:
         with:
           compose-file: ./docker-compose.yml
           compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester"
           services: "tester"
