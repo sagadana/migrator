@@ -150,5 +150,5 @@ func main() {
 ## Test
 
 ```sh
-docker compose --env-file ./tests/.env  up tester
+docker compose --env-file ./tests/.env.dev  up tester
 ```

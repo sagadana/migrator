@@ -181,6 +181,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	// Update
 	if len(request.Updates) > 0 {
 		for key, item := range request.Updates {
+			delete(item, MongoIDField) // Remove mongoId from update payload - prevent errors
 			docs = append(docs,
 				mongo.NewUpdateOneModel().
 					SetFilter(bson.M{MongoIDField: key}).

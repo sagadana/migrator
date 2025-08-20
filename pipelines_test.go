@@ -16,6 +16,7 @@ import (
 )
 
 const IDField = "Index"
+const CIDField = "Customer Id"
 const CRUpdateField = "Test_Cr"
 
 type StoreType string
@@ -228,7 +229,7 @@ func Test_File_To_File_Migration_Pipeline(t *testing.T) {
 			defer toDs.Clear(&ctx) // Clear data after testing
 
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, nil)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
@@ -302,7 +303,7 @@ func Test_File_To_File_Streaming_Pipeline(t *testing.T) {
 			defer toDs.Clear(&ctx) // Clear data after testing
 
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, nil)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
@@ -381,17 +382,24 @@ func Test_File_To_Mongo_Migration_Pipeline(t *testing.T) {
 			)
 			defer toDs.Clear(&ctx) // Clear data after testing
 
+			// Use to transform to Include default mongo ID
+			mongoTransformer := func(data map[string]any) (map[string]any, error) {
+				data[datasources.MongoIDField] = data[CIDField]
+				return data, nil
+			}
+
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, mongoTransformer)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
 
 			pipeline := pipelines.Pipeline{
-				ID:    "test-pipeline-1",
-				From:  fromDs,
-				To:    toDs,
-				Store: getStore(storeType, basePath),
+				ID:        "test-pipeline-1",
+				From:      fromDs,
+				To:        toDs,
+				Store:     getStore(storeType, basePath),
+				Transform: mongoTransformer,
 			}
 
 			maxSize := int64(30)
@@ -470,17 +478,24 @@ func Test_File_To_Mongo_Streaming_Pipeline(t *testing.T) {
 			)
 			defer toDs.Clear(&ctx) // Clear data after testing
 
+			// Use to transform to Include default mongo ID
+			mongoTransformer := func(data map[string]any) (map[string]any, error) {
+				data[datasources.MongoIDField] = data[CIDField]
+				return data, nil
+			}
+
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, mongoTransformer)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
 
 			pipeline := pipelines.Pipeline{
-				ID:    "test-pipeline-1",
-				From:  fromDs,
-				To:    toDs,
-				Store: getStore(storeType, basePath),
+				ID:        "test-pipeline-1",
+				From:      fromDs,
+				To:        toDs,
+				Store:     getStore(storeType, basePath),
+				Transform: mongoTransformer,
 			}
 
 			maxSize := int64(10)
@@ -550,8 +565,14 @@ func Test_Mongo_To_File_Migration_Pipeline(t *testing.T) {
 			toDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
 			defer toDs.Clear(&ctx) // Clear data after testing
 
+			// Use to transform to Include default mongo ID
+			mongoTransformer := func(data map[string]any) (map[string]any, error) {
+				data[datasources.MongoIDField] = data[CIDField]
+				return data, nil
+			}
+
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, mongoTransformer)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}
@@ -638,8 +659,14 @@ func Test_Mongo_To_File_Streaming_Pipeline(t *testing.T) {
 			toDs := datasources.NewFileDatasource(basePath, "test-from-customers", IDField)
 			defer toDs.Clear(&ctx) // Clear data after testing
 
+			// Use to transform to Include default mongo ID
+			mongoTransformer := func(data map[string]any) (map[string]any, error) {
+				data[datasources.MongoIDField] = data[CIDField]
+				return data, nil
+			}
+
 			// Load sample data into source
-			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10)
+			err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", 10, mongoTransformer)
 			if err != nil {
 				t.Errorf("failed to load data from CSV: %s", err)
 			}

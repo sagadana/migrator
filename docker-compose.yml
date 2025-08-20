@@ -9,7 +9,7 @@ services:
     networks:
       - dev-network
     env_file:
-      - ./tests/.env
+      - ./tests/.env.dev
     depends_on:
       mongo-init:
         condition: service_started

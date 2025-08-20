@@ -121,8 +121,8 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 }
 
 // Stream contents of a CSV File
-func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error) {
-	out := make(chan []map[string]string)
+func StreamCSV(path string, batchSize int64) (<-chan []map[string]any, error) {
+	out := make(chan []map[string]any)
 
 	if batchSize <= 0 {
 		batchSize = 1
@@ -149,7 +149,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 		}
 
 		// Batch
-		records := []map[string]string{}
+		records := make([]map[string]any, 0)
 
 		// Stream the CSV content to the output stream
 		for {
@@ -164,7 +164,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 			}
 
 			// Map the row to a map[string]string using the header
-			record := make(map[string]string)
+			record := make(map[string]any)
 			for i, value := range row {
 				record[headers[i]] = value
 			}
@@ -175,7 +175,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 			// Write the records to the output stream
 			if len(records) >= int(batchSize) {
 				out <- records
-				records = []map[string]string{} // Reset batch
+				records = make([]map[string]any, 0)
 			}
 		}
 

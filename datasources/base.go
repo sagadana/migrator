@@ -2,7 +2,6 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/sagadana/migrator/helpers"
 )
@@ -51,26 +50,28 @@ type Datasource interface {
 }
 
 // Load CSV data into datasource
-func LoadCSV(ctx *context.Context, ds Datasource, path string, batchSize int64) error {
+func LoadCSV(ctx *context.Context,
+	ds Datasource, path string, batchSize int64,
+	// Nullable transformer
+	transformer func(data map[string]any) (map[string]any, error),
+) error {
 	result, err := helpers.StreamCSV(path, batchSize)
 	if err != nil {
 		return err
 	}
 
 	for data := range result {
-		bytes, err := json.Marshal(data)
-		if err != nil {
-			return err
+		if transformer != nil {
+			var err error
+			for i, item := range data {
+				item, err = transformer(item)
+				if err != nil {
+					data[i] = item
+				}
+			}
 		}
-
-		converted := []map[string]any{}
-		err = json.Unmarshal(bytes, &converted)
-		if err != nil {
-			return err
-		}
-
 		err = ds.Push(ctx, &DatasourcePushRequest{
-			Inserts: converted,
+			Inserts: data,
 		})
 		if err != nil {
 			return err
