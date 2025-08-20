@@ -18,10 +18,11 @@ import (
 )
 
 type PipelineConfig struct {
-	ParallelLoad               int
-	BatchSize                  int64
-	MaxSize                    int64
-	StartOffset                int64
+	MigrationBatchSize    int64
+	MigrationMaxSize      int64
+	MigrationStartOffset  int64
+	MigrationParallelLoad int
+
 	ContinuousReplication      bool
 	ReplicationBatchSize       int64
 	ReplicationBatchWindowSecs int64
@@ -87,7 +88,7 @@ func (p *Pipeline) handleExit(ctx *context.Context) {
 		if state.ReplicationStatus == states.ReplicationStatusStarting ||
 			state.ReplicationStatus == states.ReplicationStatusStreaming {
 			state.ReplicationStatus = states.ReplicationStatusPaused
-			state.ReplicatiOnMigrationStoppededAt = time.Now()
+			state.ReplicationStoppededAt = time.Now()
 			if r := recover(); r != nil {
 				state.ReplicationIssue = fmt.Sprintf("Unexpexted Error: %v", r)
 			}
@@ -221,8 +222,8 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 		state.ReplicationStatus == states.ReplicationStatusPaused ||
 		state.ReplicationStatus == states.ReplicationStatusFailed {
 		state = states.State{
-			ReplicationStatus:             states.ReplicationStatusStarting,
-			ReplicatiOnMigrationStartedAt: time.Now(),
+			ReplicationStatus:    states.ReplicationStatusStarting,
+			ReplicationStartedAt: time.Now(),
 		}
 		p.setState(ctx, state)
 	}
@@ -231,7 +232,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	if state.ReplicationStatus == states.ReplicationStatusStreaming {
 		return &PipelineError{
 			Code:    PipelineErrorProcessing,
-			Message: fmt.Sprintf("pipeline (%s) is already streaming. StartedAt: %s", p.ID, state.ReplicatiOnMigrationStartedAt.String()),
+			Message: fmt.Sprintf("pipeline (%s) is already streaming. StartedAt: %s", p.ID, state.ReplicationStartedAt.String()),
 		}
 	}
 
@@ -255,7 +256,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	if err != nil {
 		state.ReplicationStatus = states.ReplicationStatusFailed
 		state.ReplicationIssue = err.Error()
-		state.ReplicatiOnMigrationStoppededAt = time.Now()
+		state.ReplicationStoppededAt = time.Now()
 		p.setState(ctx, state)
 
 		log.Printf("Replication Failed: %s", state.ReplicationIssue)
@@ -268,7 +269,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 
 	// Track: Paused
 	state.ReplicationStatus = states.ReplicationStatusPaused
-	state.ReplicatiOnMigrationStoppededAt = time.Now()
+	state.ReplicationStoppededAt = time.Now()
 	p.setState(ctx, state)
 
 	log.Printf("Replication Paused")
@@ -290,9 +291,9 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		state.MigrationStatus == states.MigrationStatusCompleted ||
 		state.MigrationStatus == states.MigrationStatusFailed {
 		state = states.State{
-			MigrationStatus:             states.MigrationStatusStarting,
-			MigrationOffset:             json.Number(strconv.FormatInt(config.StartOffset, 10)),
-			MigratiOnMigrationStartedAt: time.Now(),
+			MigrationStatus:    states.MigrationStatusStarting,
+			MigrationOffset:    json.Number(strconv.FormatInt(config.MigrationStartOffset, 10)),
+			MigrationStartedAt: time.Now(),
 		}
 		p.setState(ctx, state)
 	}
@@ -301,7 +302,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	if state.MigrationStatus == states.MigrationStatusInProgress {
 		return &PipelineError{
 			Code:    PipelineErrorProcessing,
-			Message: fmt.Sprintf("pipeline (%s) is already migrating. StartedAt: %s", p.ID, state.ReplicatiOnMigrationStartedAt.String()),
+			Message: fmt.Sprintf("pipeline (%s) is already migrating. StartedAt: %s", p.ID, state.ReplicationStartedAt.String()),
 		}
 	}
 
@@ -311,18 +312,18 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	// Use previous offset for resume from last position
 	previousOffset, _ := state.MigrationOffset.Int64()
-	startOffet := max(previousOffset, config.StartOffset)
+	startOffet := max(previousOffset, config.MigrationStartOffset)
 
 	// Get total items
 	total := p.From.Count(ctx, &datasources.DatasourceFetchRequest{
-		Size:   config.MaxSize,
+		Size:   config.MigrationMaxSize,
 		Offset: startOffet,
 	})
 
 	parallel := helpers.ParallelConfig{
-		Units:       config.ParallelLoad,
+		Units:       config.MigrationParallelLoad,
 		Total:       total,
-		BatchSize:   config.BatchSize,
+		BatchSize:   config.MigrationBatchSize,
 		StartOffset: startOffet,
 	}
 
@@ -349,7 +350,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 			if err != nil {
 				state.ReplicationStatus = states.ReplicationStatusFailed
 				state.ReplicationIssue = err.Error()
-				state.ReplicatiOnMigrationStoppededAt = time.Now()
+				state.ReplicationStoppededAt = time.Now()
 				p.setState(ctx, state)
 
 				log.Printf("Replication Failed: %s", state.ReplicationIssue)
@@ -362,7 +363,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 			// Track: Paused
 			state.ReplicationStatus = states.ReplicationStatusPaused
-			state.ReplicatiOnMigrationStoppededAt = time.Now()
+			state.ReplicationStoppededAt = time.Now()
 			p.setState(ctx, state)
 
 			log.Printf("Replication Paused")
