@@ -9,8 +9,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Build docker image
-        run: docker build -f ./Dockerfile -t local .
-
-      - name: Run tests
-        run: docker run -i -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester"
+          services: "tester"

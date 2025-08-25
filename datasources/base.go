@@ -1,6 +1,10 @@
 package datasources
 
-import "context"
+import (
+	"context"
+
+	"github.com/sagadana/migrator/helpers"
+)
 
 type DatasourcePushRequest struct {
 	Inserts []map[string]any
@@ -26,13 +30,13 @@ type DatasourceFetchResult struct {
 	End   int64
 }
 type DatasourceStreamResult struct {
-	DatasourceFetchResult
 	Err  error
 	Docs DatasourcePushRequest
 }
+type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
-	// Initialize Data source
+	// Initialize data source
 	Init()
 	// Get total count
 	Count(ctx *context.Context, request *DatasourceFetchRequest) int64
@@ -40,6 +44,40 @@ type Datasource interface {
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
 	// Insert/Update/Delete data
 	Push(ctx *context.Context, request *DatasourcePushRequest) error
-	// Listen to Change Data Streams (CDC) if available
+	// Listen to Change Data Streams or periodically watch for changes
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
+	// Clear data source
+	Clear(ctx *context.Context) error
+}
+
+// Load CSV data into datasource
+func LoadCSV(ctx *context.Context,
+	ds Datasource, path string, batchSize int64,
+	// Nullable transformer
+	transformer DatasourceTransformer,
+) error {
+	result, err := helpers.StreamCSV(path, batchSize)
+	if err != nil {
+		return err
+	}
+
+	for data := range result {
+		if transformer != nil {
+			var err error
+			for i, item := range data {
+				item, err = transformer(item)
+				if err != nil {
+					data[i] = item
+				}
+			}
+		}
+		err = ds.Push(ctx, &DatasourcePushRequest{
+			Inserts: data,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

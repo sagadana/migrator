@@ -163,37 +163,6 @@ func (ds *FileDatasource) buildIndex() error {
 	return ds.saveIndex()
 }
 
-// Load content of CSV file into datasource
-func (ds *FileDatasource) LoadCSV(ctx *context.Context, path string, batchSize int64) error {
-	result, err := helpers.StreamCSV(path, batchSize)
-	if err != nil {
-		return err
-	}
-
-	for data := range result {
-		bytes, err := json.Marshal(data)
-		if err != nil {
-			return err
-		}
-
-		converted := []map[string]any{}
-		err = json.Unmarshal(bytes, &converted)
-		if err != nil {
-			return err
-		}
-
-		err = ds.Push(ctx, &DatasourcePushRequest{
-			Inserts: converted,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	log.Printf("File datasource '%s' synced %d records from CSV", ds.collectionName, len(ds.index))
-	return nil
-}
-
 // --- Datasource Interface Implementation ---
 
 // Init sets up the datasource by creating the collection directory and loading/building the index.
@@ -221,8 +190,6 @@ func (ds *FileDatasource) Init() {
 
 // Count returns the total number of records by checking the index size.
 func (ds *FileDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) int64 {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
 
 	count := int64(len(ds.indexKeys))
 	offset := int64(0)
@@ -243,8 +210,6 @@ func (ds *FileDatasource) Count(_ *context.Context, request *DatasourceFetchRequ
 
 // Fetch retrieves a paginated set of documents by reading individual files based on the index.
 func (ds *FileDatasource) Fetch(_ *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
 
 	total := int64(len(ds.indexKeys))
 	last := max(0, total-1)
@@ -360,10 +325,11 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 		for {
 			select {
 			case <-bgCtx.Done():
-				log.Println("Watching: Context cancelled")
-
+				log.Printf("Canceled File Watcher")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
-				out <- DatasourceStreamResult{Docs: batch}
+				if len(batch.Inserts) > 0 || len(batch.Updates) > 0 || len(batch.Deletes) > 0 {
+					out <- DatasourceStreamResult{Docs: batch}
+				}
 				return
 
 			case <-ticker.C:
@@ -435,4 +401,23 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 	}
 
 	return out
+}
+
+// Clear data source
+func (ds *FileDatasource) Clear(ctx *context.Context) error {
+	err := os.RemoveAll(ds.collectionPath)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(ds.indexPath)
+	if err != nil {
+		return err
+	}
+	ds.index = make(map[string]string)
+	ds.indexKeys = make([]string, 0)
+
+	// Re-init
+	ds.Init()
+
+	return nil
 }
