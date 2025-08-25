@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # Configuration
-HOSTS=("mongo-a") # TODO: Add hosts here (space separated)
-PORT=27017
+HOSTS=("${MONGO_HOST_1}") # TODO: Add hosts here (space separated)
+
+PORT=${MONGO_PORT}
 USER=${MONGO_INITDB_ROOT_USERNAME}
 PASS=${MONGO_INITDB_ROOT_PASSWORD}
 TIMEOUT=60
-RS_NAME="rs0"
+RS_NAME="${MONGO_RS}"
 
 echo "###### Waiting for all MongoDB instances to be ready..."
 for host in "${HOSTS[@]}"; do

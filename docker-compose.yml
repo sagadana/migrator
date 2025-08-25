@@ -51,12 +51,12 @@ services:
     expose:
       - 27017
     ports:
-      - 27017:27017
+      - ${MONGO_PORT}:27017
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
       - MONGO_INITDB_DATABASE=${MONGO_DB}
-      - MONGO_REPLICA_SET_NAME=rs0
+      - MONGO_REPLICA_SET_NAME=${MONGO_RS}
     networks:
       - dev-network
     volumes:
@@ -75,7 +75,7 @@ services:
         chmod 400 /data/replica.key
         chown 999 /data/replica.key
         exec docker-entrypoint.sh $$@
-    command: mongod --bind_ip_all --replSet rs0 --keyFile /data/replica.key
+    command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
   # MongoDb Replica-Set Initializer
   mongo-init:
     image: "mongo:latest"
@@ -85,6 +85,9 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_HOST_1=${MONGO_PRIMARY_HOST}
+      - MONGO_PORT=${MONGO_PORT}
+      - MONGO_RS=${MONGO_RS}
     volumes:
       - ./tests/mongo/replica-init.sh:/scripts/replica-init.sh
       - ./replica.key:/data/replica.key
