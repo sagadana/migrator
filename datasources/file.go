@@ -190,8 +190,6 @@ func (ds *FileDatasource) Init() {
 
 // Count returns the total number of records by checking the index size.
 func (ds *FileDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) int64 {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
 
 	count := int64(len(ds.indexKeys))
 	offset := int64(0)
@@ -212,8 +210,6 @@ func (ds *FileDatasource) Count(_ *context.Context, request *DatasourceFetchRequ
 
 // Fetch retrieves a paginated set of documents by reading individual files based on the index.
 func (ds *FileDatasource) Fetch(_ *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
 
 	total := int64(len(ds.indexKeys))
 	last := max(0, total-1)
@@ -329,7 +325,7 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 		for {
 			select {
 			case <-bgCtx.Done():
-				log.Printf("---------- Canceled File Watcher ------------")
+				log.Printf("Canceled File Watcher")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
 				if len(batch.Inserts) > 0 || len(batch.Updates) > 0 || len(batch.Deletes) > 0 {
 					out <- DatasourceStreamResult{Docs: batch}
@@ -419,6 +415,9 @@ func (ds *FileDatasource) Clear(ctx *context.Context) error {
 	}
 	ds.index = make(map[string]string)
 	ds.indexKeys = make([]string, 0)
+
+	// Re-init
+	ds.Init()
 
 	return nil
 }

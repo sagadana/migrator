@@ -33,6 +33,7 @@ type DatasourceStreamResult struct {
 	Err  error
 	Docs DatasourcePushRequest
 }
+type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
 	// Initialize data source
@@ -43,7 +44,7 @@ type Datasource interface {
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
 	// Insert/Update/Delete data
 	Push(ctx *context.Context, request *DatasourcePushRequest) error
-	// Listen to Change Data Streams (CDC) if available
+	// Listen to Change Data Streams or periodically watch for changes
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
 	// Clear data source
 	Clear(ctx *context.Context) error
@@ -53,7 +54,7 @@ type Datasource interface {
 func LoadCSV(ctx *context.Context,
 	ds Datasource, path string, batchSize int64,
 	// Nullable transformer
-	transformer func(data map[string]any) (map[string]any, error),
+	transformer DatasourceTransformer,
 ) error {
 	result, err := helpers.StreamCSV(path, batchSize)
 	if err != nil {

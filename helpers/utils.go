@@ -70,7 +70,7 @@ func ParallelRead[T any](
 		go func() {
 			defer wg.Done()
 
-			job := <-jobs
+			job := <-jobs // expecting only one batch job per worker
 
 			// Load chunk batches
 			for b := range chunkBatches {

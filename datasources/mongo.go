@@ -201,7 +201,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	if len(docs) > 0 {
 		_, err := collection.BulkWrite(*ctx, docs)
 		if err != nil {
-			return fmt.Errorf("mongodb error: bulk write failed: %w", err)
+			return fmt.Errorf("mongodb bulk write error: %w", err)
 		}
 	}
 
@@ -313,7 +313,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		for {
 			select {
 			case <-bgCtx.Done():
-				log.Printf("---------- Canceled Mongo Change Stream ------------")
+				log.Printf("Canceled Mongo Change Stream")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
 				if len(batch) > 0 {
 					out <- DatasourceStreamResult{Docs: processEvents(batch)}

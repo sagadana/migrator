@@ -11,13 +11,13 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Datasources
 
-| Datasource | Status  | Notes                                                                  |
-| ---------- | ------- | ---------------------------------------------------------------------- |
-| `File`     | Done    |
-| `MongoDB`  | Done    | _Continuous Replication only available for replica set / cluster mode_ |
-| `Redis`    | WIP     |                                                                        |
-| `Postgres` | Planned |                                                                        |
-| `<More>`   | Soon    |                                                                        |
+| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                  |
+| ---------- | ------- | ------------------ | --------------------------------------- |
+| `File`     | Done    | R/W                | Yes                                     |
+| `MongoDB`  | Done    | R/W                | Yes (_with replica set / cluster mode_) |
+| `Redis`    | WIP     | TBC                | TBC                                     |
+| `Postgres` | Planned | TBC                | TBC                                     |
+| `<More>`   | Soon    | TBC                | TBC                                     |
 
 ## State Stores
 
@@ -77,6 +77,7 @@ func main() {
         MigrationBatchSize:       10,
 
         OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
@@ -106,11 +107,12 @@ func main() {
         ReplicationBatchWindowSecs: 1,
 
         OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
 
         OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
-        OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationProgress: func(err error) { /* Add your logic. E.g extra logs */ },
         OnReplicationError:    func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:  func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
@@ -137,7 +139,7 @@ func main() {
 
         OnReplicationStart:     func() { /* Add your logic. E.g extra logs */ },
         OnReplicationProgress:  func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-        OnReplicationError:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(err error) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
