@@ -1,22 +1,35 @@
 package datasources
 
-import "context"
+import (
+	"context"
+
+	"github.com/sagadana/migrator/helpers"
+)
 
 type DatasourcePushRequest struct {
 	Inserts []map[string]any
 	Updates map[string]map[string]any
 	Deletes []string
 }
+type DatasourcePushCount struct {
+	Inserts int64
+	Updates int64
+	Deletes int64
+}
+
 type DatasourceFetchRequest struct {
-	// Number of items to fetch. 0 to fetch all
+	// List of IDs to fetch (optional)
+	IDs []string
+	// Number of items to fetch. 0 to fetch all (optional)
 	Size int64
-	// Offset to start fetching from. 0 to start from beginning
+	// Offset to start fetching from. 0 to start from beginning (optional)
 	Offset int64
 }
 type DatasourceStreamRequest struct {
-	// Number of items to batch. 0 to disable batching
+	// TODO: Add support for StartFromTimestamp
+	// Number of items to batch. 0 to disable batching (optional)
 	BatchSize int64
-	// How long to wait to accumulate batch
+	// How long to wait to accumulate batch (optional)
 	BatchWindowSeconds int64
 }
 type DatasourceFetchResult struct {
@@ -26,20 +39,54 @@ type DatasourceFetchResult struct {
 	End   int64
 }
 type DatasourceStreamResult struct {
-	DatasourceFetchResult
 	Err  error
 	Docs DatasourcePushRequest
 }
+type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
-	// Initialize Data source
+	// Initialize data source
 	Init()
 	// Get total count
 	Count(ctx *context.Context, request *DatasourceFetchRequest) int64
-	// Get data
+	// Fetch data
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
 	// Insert/Update/Delete data
-	Push(ctx *context.Context, request *DatasourcePushRequest) error
-	// Listen to Change Data Streams (CDC) if available
+	Push(ctx *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error)
+	// Listen to Change Data Streams or periodically watch for changes
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
+	// Clear data source
+	Clear(ctx *context.Context) error
+}
+
+// Load CSV data into datasource
+func LoadCSV(ctx *context.Context,
+	ds Datasource, path string, batchSize int64,
+	// Nullable transformer
+	transformer DatasourceTransformer,
+) error {
+	result, err := helpers.StreamCSV(path, batchSize)
+	if err != nil {
+		return err
+	}
+
+	for data := range result {
+		if transformer != nil {
+			var err error
+			for i, item := range data {
+				item, err = transformer(item)
+				if err != nil {
+					data[i] = item
+				}
+			}
+		}
+		_, err = ds.Push(ctx, &DatasourcePushRequest{
+			Inserts: data,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

@@ -13,6 +13,7 @@ const (
 	MigrationStatusStarting   MigrationStatusType = "starting"
 	MigrationStatusInProgress MigrationStatusType = "in_progress"
 	MigrationStatusCompleted  MigrationStatusType = "completed"
+	MigrationStatusStopped    MigrationStatusType = "stopped"
 	MigrationStatusFailed     MigrationStatusType = "failed"
 )
 const (
@@ -23,17 +24,17 @@ const (
 )
 
 type State struct {
-	MigrationStatus             MigrationStatusType `json:"migration_status"`
-	MigrationTotal              json.Number         `json:"migration_total"`
-	MigrationOffset             json.Number         `json:"migration_offset"`
-	MigrationIssue              string              `json:"migration_issue"`
-	MigratiOnMigrationStartedAt time.Time           `json:"migration_started_at"`
-	MigrationStopedAt           time.Time           `json:"migration_stoped_at"`
+	MigrationStatus    MigrationStatusType `json:"migration_status"`
+	MigrationTotal     json.Number         `json:"migration_total"`
+	MigrationOffset    json.Number         `json:"migration_offset"`
+	MigrationIssue     string              `json:"migration_issue"`
+	MigrationStartedAt time.Time           `json:"migration_started_at"`
+	MigrationStoppedAt time.Time           `json:"migration_stopped_at"`
 
-	ReplicationStatus                ReplicationStatusType `json:"replication_status"`
-	ReplicationIssue                 string                `json:"replication_issue"`
-	ReplicatiOnMigrationStartedAt    time.Time             `json:"replication_started_at"`
-	ReplicatiOnMigrationCompleteedAt time.Time             `json:"replication_stoped_at"`
+	ReplicationStatus      ReplicationStatusType `json:"replication_status"`
+	ReplicationIssue       string                `json:"replication_issue"`
+	ReplicationStartedAt   time.Time             `json:"replication_started_at"`
+	ReplicationStoppededAt time.Time             `json:"replication_stopped_at"`
 }
 
 type Store interface {
