@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,7 +128,7 @@ func (ds *FileDatasource) buildIndex() error {
 		path := filepath.Join(ds.collectionPath, entry.Name())
 		content, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("Warning: could not read file %s during index build: %v", path, err)
+			slog.Error(fmt.Sprintf("Warning: could not read file %s during index build: %v", path, err))
 			continue
 		}
 		hash := helpers.CalculateHash(content)
@@ -173,12 +173,12 @@ func (ds *FileDatasource) Init() {
 
 	// If the index is empty but the directory might have files, build it.
 	if len(ds.indexKeys) == 0 {
-		log.Printf("Building index for '%s' collection from data files...", ds.collectionName)
+		slog.Info(fmt.Sprintf("Building index for '%s' collection from data files...", ds.collectionName))
 		if err := ds.buildIndex(); err != nil {
 			panic(fmt.Sprintf("FATAL: could not build index: %v", err))
 		}
 	}
-	log.Printf("File datasource '%s' initialized with %d records.", ds.collectionName, len(ds.indexKeys))
+	slog.Info(fmt.Sprintf("File datasource '%s' initialized with %d records.", ds.collectionName, len(ds.indexKeys)))
 }
 
 // Count returns the total number of records by checking the index size.
@@ -264,31 +264,31 @@ func (ds *FileDatasource) Push(_ *context.Context, request *DatasourcePushReques
 	// 1. Handle Inserts
 	for i, record := range request.Inserts {
 		if len(record) == 0 {
-			log.Printf("Failed to insert record. Empty record at index '%d'", i)
+			slog.Warn(fmt.Sprintf("File insert: failed to insert record. Empty record at index '%d'", i))
 			continue
 		}
 
 		id, ok := record[ds.idField]
 		if !ok {
-			log.Printf("File insert error: failed to get record ID. '%s' not found in record", ds.idField)
+			slog.Warn(fmt.Sprintf("File insert: failed to get record ID. '%s' not found in record", ds.idField))
 			continue
 		}
 
 		docID := id.(string)
 		_, ok = ds.index.Load(docID)
 		if ok {
-			log.Printf("Skipping inserts to '%s' for ID '%s': File already exists", ds.collectionName, docID)
+			slog.Info(fmt.Sprintf("File insert: skipping inserts to '%s' for ID '%s': file already exists", ds.collectionName, docID))
 			continue
 		}
 
 		bytes, err := json.MarshalIndent(record, "", "  ")
 		if err != nil {
-			log.Printf("File insert error: failed to marshal insert for ID %s: %s", docID, err.Error())
+			slog.Warn(fmt.Sprintf("File insert: failed to marshal insert for ID %s: %s", docID, err.Error()))
 			continue
 		}
 		filePath := filepath.Join(ds.collectionPath, docID+FilePrefix)
 		if err := os.WriteFile(filePath, bytes, ds.mode); err != nil {
-			log.Printf("File insert error: failed to write insert for ID %s: %s", docID, err.Error())
+			slog.Error(fmt.Sprintf("File insert: failed to write insert for ID %s: %s", docID, err.Error()))
 			continue
 		}
 
@@ -302,17 +302,17 @@ func (ds *FileDatasource) Push(_ *context.Context, request *DatasourcePushReques
 		newHash := helpers.CalculateHash(bytes)
 		oldHash, ok := ds.index.Load(docID)
 		if ok && newHash == oldHash {
-			log.Printf("Skipping updates to '%s' for ID '%s': No changes made", ds.collectionName, docID)
+			slog.Info(fmt.Sprintf("File update: skipping updates to '%s' for ID '%s': no changes made", ds.collectionName, docID))
 			continue
 		}
 
 		if err != nil {
-			log.Printf("File update error: failed to marshal update for ID %s: %s", docID, err.Error())
+			slog.Warn(fmt.Sprintf("File update: failed to marshal update for ID %s: %s", docID, err.Error()))
 			continue
 		}
 		filePath := filepath.Join(ds.collectionPath, docID+FilePrefix)
 		if err := os.WriteFile(filePath, bytes, ds.mode); err != nil {
-			log.Printf("File update error: failed to write update for ID %s: %s", docID, err.Error())
+			slog.Warn(fmt.Sprintf("File update: failed to write update for ID %s: %s", docID, err.Error()))
 			continue
 		}
 
@@ -324,7 +324,7 @@ func (ds *FileDatasource) Push(_ *context.Context, request *DatasourcePushReques
 	for _, docID := range request.Deletes {
 		filePath := filepath.Join(ds.collectionPath, docID+FilePrefix)
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("File delete error: failed to delete file for ID %s: %s", docID, err.Error())
+			slog.Warn(fmt.Sprintf("File delete: failed to delete file for ID %s: %s", docID, err.Error()))
 			continue
 		}
 
@@ -372,11 +372,11 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 			Deletes: make([]string, 0),
 		}
 
-		log.Printf("Watching '%s' for changes...", ds.collectionPath)
+		slog.Info(fmt.Sprintf("Watching '%s' for changes...", ds.collectionPath))
 		for {
 			select {
 			case <-bgCtx.Done():
-				log.Printf("Canceled File Watcher")
+				slog.Info("Canceled File Watcher")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
 				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
 					out <- DatasourceStreamResult{Docs: batch}

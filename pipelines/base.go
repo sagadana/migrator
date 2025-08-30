@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -111,7 +110,7 @@ func (p *Pipeline) handleUnexpectedExit(ctx *context.Context) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
-	log.Printf("Unexpected interruption. Updating state...")
+	slog.Info("Unexpected interruption. Updating state...")
 	p.handleExit(ctx)
 
 	close(c)
@@ -314,7 +313,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	state.ReplicationStatus = states.ReplicationStatusStreaming
 	p.setState(ctx, state)
 
-	log.Printf("Replication Started")
+	slog.Info("Replication Started")
 	if config.OnReplicationStart != nil {
 		go config.OnReplicationStart(state)
 	}
@@ -335,7 +334,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 		state.ReplicationStoppededAt = time.Now()
 		p.setState(ctx, state)
 
-		log.Printf("Replication Failed: %s", state.ReplicationIssue)
+		slog.Error(fmt.Sprintf("Replication Failed: %s", state.ReplicationIssue))
 		if config.OnReplicationStopped != nil {
 			go config.OnReplicationStopped(state)
 		}
@@ -348,7 +347,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 	state.ReplicationStoppededAt = time.Now()
 	p.setState(ctx, state)
 
-	log.Printf("Replication Paused")
+	slog.Info("Replication Paused")
 	if config.OnReplicationStopped != nil {
 		go config.OnReplicationStopped(state)
 	}
@@ -444,7 +443,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	state.MigrationOffset = json.Number(strconv.FormatInt(startOffet, 10))
 	p.setState(ctx, state)
 
-	log.Printf("Migration Started. Total: %d, Offset: %d", total, startOffet)
+	slog.Info(fmt.Sprintf("Migration Started. Total: %d, Offset: %d", total, startOffet))
 	if config.OnMigrationStart != nil {
 		go config.OnMigrationStart(state)
 	}
@@ -483,7 +482,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		if result.Err != nil {
 			state.MigrationIssue = result.Err.Error()
 
-			log.Printf("Migration Error: %s", result.Err.Error())
+			slog.Error(fmt.Sprintf("Migration Error: %s", result.Err.Error()))
 			if config.OnMigrationError != nil {
 				defer config.OnMigrationError(state, result.Err)
 			}
@@ -491,7 +490,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 			state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+result.Count.Inserts, 10))
 			state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+result.Count.Inserts, 10))
 
-			log.Printf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset)
+			slog.Info(fmt.Sprintf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset))
 			if config.OnMigrationProgress != nil {
 				defer config.OnMigrationProgress(state, *result.Count)
 			}
@@ -507,7 +506,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		state.MigrationStoppedAt = time.Now()
 		p.setState(ctx, state)
 
-		log.Printf("Migration Failed: %s", state.MigrationIssue)
+		slog.Error(fmt.Sprintf("Migration Failed: %s", state.MigrationIssue))
 		if config.OnMigrationStopped != nil {
 			go config.OnMigrationStopped(state)
 		}
@@ -520,7 +519,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	state.MigrationStoppedAt = time.Now()
 	p.setState(ctx, state)
 
-	log.Printf("Migration Completed. Total: %s, Offset: %s", state.MigrationTotal, state.MigrationOffset)
+	slog.Info(fmt.Sprintf("Migration Completed. Total: %s, Offset: %s", state.MigrationTotal, state.MigrationOffset))
 	if config.OnMigrationStopped != nil {
 		go config.OnMigrationStopped(state)
 	}

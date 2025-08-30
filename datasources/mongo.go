@@ -3,7 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -344,7 +344,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		// Buffer to hold the batch of change events
 		batch := make([]map[string]any, 0, batchSize)
 
-		log.Printf("Watching collection '%s' for changes...", ds.collectionName)
+		slog.Info(fmt.Sprintf("Watching collection '%s' for changes...", ds.collectionName))
 		// Use a select statement to handle multiple concurrent events:
 		// 1. A new change event arrives.
 		// 2. The batch time window expires (ticker fires).
@@ -352,7 +352,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		for {
 			select {
 			case <-bgCtx.Done():
-				log.Printf("Canceled Mongo Change Stream")
+				slog.Info("Canceled Mongo Change Stream")
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
 				if len(batch) > 0 {
 					out <- DatasourceStreamResult{Docs: processEvents(batch)}
