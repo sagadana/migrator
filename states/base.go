@@ -13,6 +13,7 @@ const (
 	MigrationStatusStarting   MigrationStatusType = "starting"
 	MigrationStatusInProgress MigrationStatusType = "in_progress"
 	MigrationStatusCompleted  MigrationStatusType = "completed"
+	MigrationStatusStopped    MigrationStatusType = "stopped"
 	MigrationStatusFailed     MigrationStatusType = "failed"
 )
 const (

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-HOSTS=("${MONGO_HOST_1}") # TODO: Add hosts here (space separated)
+HOSTS=(${MONGO_HOST_1} ${MONGO_HOST_2}) # TODO: Add hosts here (space separated)
 
 PORT=${MONGO_PORT}
 USER=${MONGO_INITDB_ROOT_USERNAME}
@@ -32,6 +32,7 @@ CONFIG=$(cat <<EOF
   "_id": "$RS_NAME",
   "members": [
     { "_id": 0, "host": "${HOSTS[0]}:$PORT", "priority": 2 },
+    { "_id": 1, "host": "${HOSTS[1]}:$PORT", "priority": 1 },
   ]
 }
 EOF

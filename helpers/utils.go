@@ -2,7 +2,10 @@ package helpers
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"log"
 	"os"
 	"sort"
@@ -16,6 +19,12 @@ type ParallelConfig struct {
 	Total       int64
 	BatchSize   int64
 	StartOffset int64
+}
+
+type ChunkJob struct {
+	ID     int
+	Offset int64
+	Size   int64
 }
 
 // Process batch reads in parallel
@@ -38,63 +47,55 @@ func ParallelRead[T any](
 	}
 
 	// Calculate chunk size
-	chunks := units
-	chunkSize := max(1, int64((float64(total / int64(chunks)))))
-	chunkSizeLeft := total % int64(chunks)
-	if chunkSizeLeft > 0 {
+	chunks := int64(units)
+	chunkSize := max(1, int64((float64(total / chunks))))
+	if total%chunks > 0 {
 		chunks++
 	}
 
-	// Calculate number of batches per chunk
+	// Calculate bach size per chunk
 	batchSize = min(batchSize, chunkSize)
-	chunkBatches := int64(chunkSize / batchSize)
-	if chunkSize%batchSize > 0 {
-		chunkBatches++
-	}
-
-	// Calculate total number of batches
-	batches := int64(total / batchSize)
-	if total%batchSize > 0 {
+	batches := total / batchSize
+	batchSizeLeft := total % batchSize
+	if batchSizeLeft > 0 {
 		batches++
 	}
 
 	// Create parallel job channels
-	jobs := make(chan int)
+	jobs := make(chan ChunkJob, batches)
 	out := make(chan T)
 	wg := new(sync.WaitGroup)
 
 	// Create parallel workers
-	for range chunks {
+	for i := range units {
 		wg.Add(1)
 
-		go func() {
+		go func(wrk int) {
 			defer wg.Done()
 
-			job := <-jobs // expecting only one batch job per worker
-
-			// Load chunk batches
-			for b := range chunkBatches {
-
-				chunkBatchSize := batchSize
-
-				// Last chunk & Last batch - process leftovers
-				if job == chunks-1 && b == chunkBatches-1 && chunkSizeLeft > 0 {
-					chunkBatchSize = chunkSizeLeft
-				}
-
-				offset := int64(startOffset + (b * (chunkBatchSize)) + (int64(job) * chunkSize))
-				out <- fn(ctx, job, chunkBatchSize, offset)
+			for job := range jobs {
+				out <- fn(ctx, job.ID, job.Size, job.Offset)
 			}
-		}()
+		}(i)
 	}
 
 	// Send jobs to workers
 	log.Printf(
-		"Parallel Read (Started): Units: %d, Offset: %d, Total: %d, Chunks: %d, Chunk Size: %d, Batch Size: %d\n",
-		units, startOffset, total, chunks, chunkSize, batchSize,
+		"Parallel Read (Started): Units: %d, Offset: %d, Total: %d, Batches: %d, Batch Size: %d, Batch Size Left: %d\n",
+		units, startOffset, total, batches, batchSize, batchSizeLeft,
 	)
-	for i := range chunks {
-		jobs <- i
+
+	for i := int64(0); i < batches; i++ {
+		size := batchSize
+		if i == batches-1 && batchSizeLeft > 0 {
+			size = batchSizeLeft
+		}
+
+		jobs <- ChunkJob{
+			ID:     int(i),
+			Offset: startOffset + (batchSize * i),
+			Size:   size,
+		}
 	}
 	close(jobs) // Close job channel - no more jobs to be submitted
 
@@ -216,4 +217,17 @@ func ExtractNumber(s string) int {
 		}
 	}
 	return 0 // Default to 0 if no number is found
+}
+
+// Computes a SHA256 hash for a given byte slice.
+func CalculateHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+// Generates a random string for the given length
+func RandomString(length int) string {
+	bytes := make([]byte, length)
+	_, _ = rand.Read(bytes)
+	return hex.EncodeToString(bytes)[:length]
 }

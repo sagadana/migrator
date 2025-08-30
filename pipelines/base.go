@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -27,22 +28,24 @@ type PipelineConfig struct {
 	ReplicationBatchSize       int64
 	ReplicationBatchWindowSecs int64
 
-	OnMigrationStart      func()
-	OnMigrationProgress   func(count MigrateCount)
-	OnMigrationError      func(err error)
+	OnMigrationStart      func(state states.State)
+	OnMigrationProgress   func(state states.State, count datasources.DatasourcePushCount)
+	OnMigrationError      func(state states.State, err error)
 	OnMigrationStopped    func(state states.State)
-	OnReplicationStart    func()
-	OnReplicationError    func(err error)
-	OnReplicationProgress func(count MigrateCount)
+	OnReplicationStart    func(state states.State)
+	OnReplicationError    func(state states.State, err error)
+	OnReplicationProgress func(state states.State, count datasources.DatasourcePushCount)
 	OnReplicationStopped  func(state states.State)
 }
 
 type Pipeline struct {
-	ID    string
-	Store states.Store
-	From  datasources.Datasource
-	To    datasources.Datasource
+	ID     string
+	Logger *slog.Logger
+	Store  states.Store
+	From   datasources.Datasource
+	To     datasources.Datasource
 	// Use this the convert the JSON data to a different JSON formatted output
+	//
 	// TODO: For other datasources like redis that wouldnlt always use JSON,
 	// use a dedicated Struct to manage the transformation back and forth.
 	// E.g: ```go
@@ -128,15 +131,9 @@ func (p *Pipeline) GetState(ctx *context.Context) (states.State, bool) {
 // CORE
 // -------------------
 
-type MigrateCount struct {
-	inserts int64
-	updates int64
-	deletes int64
-}
-
 type CallbackResult = struct {
-	count *MigrateCount
-	err   error
+	Count *datasources.DatasourcePushCount
+	Err   error
 }
 
 // Process migration
@@ -163,15 +160,17 @@ func (p *Pipeline) migrate(
 
 	for data := range source {
 
-		count := new(MigrateCount)
-
 		if p.Transform != nil {
-
-			request := new(datasources.DatasourcePushRequest)
 
 			// Reusable vars
 			var transformed map[string]any
 			var err error
+
+			request := &datasources.DatasourcePushRequest{
+				Updates: make(map[string]map[string]any),
+				Inserts: make([]map[string]any, 0),
+				Deletes: data.Deletes, // Deletes
+			}
 
 			// Inserts
 			for _, doc := range data.Inserts {
@@ -179,8 +178,8 @@ func (p *Pipeline) migrate(
 				if err != nil {
 					lastError = fmt.Errorf("transform error: %w", err)
 					callbackChan <- CallbackResult{
-						count: nil,
-						err:   lastError,
+						Count: nil,
+						Err:   lastError,
 					}
 					continue
 				}
@@ -193,8 +192,8 @@ func (p *Pipeline) migrate(
 				if err != nil {
 					lastError = fmt.Errorf("transform error: %w", err)
 					callbackChan <- CallbackResult{
-						count: nil,
-						err:   lastError,
+						Count: nil,
+						Err:   lastError,
 					}
 					continue
 				}
@@ -202,38 +201,43 @@ func (p *Pipeline) migrate(
 			}
 
 			// Write
-			if err = p.To.Push(ctx, request); err != nil {
+			count, err := p.To.Push(ctx, request)
+			if err != nil {
 				lastError = fmt.Errorf("migration error: %w", err)
 				callbackChan <- CallbackResult{
-					count: nil,
-					err:   lastError,
+					Count: nil,
+					Err:   lastError,
 				}
 				continue
 			}
 
-			count.inserts = int64(len(request.Inserts))
-			count.updates = int64(len(request.Updates))
-			count.deletes = int64(len(request.Deletes))
+			// Notify complete
+			if count.Inserts+count.Updates+count.Deletes > 0 {
+				callbackChan <- CallbackResult{
+					Count: &count,
+					Err:   nil,
+				}
+			}
 		} else {
+
 			// Write
-			if err := p.To.Push(ctx, &data); err != nil {
+			count, err := p.To.Push(ctx, &data)
+			if err != nil {
 				lastError = fmt.Errorf("migration error: %w", err)
 				callbackChan <- CallbackResult{
-					count: nil,
-					err:   lastError,
+					Count: nil,
+					Err:   lastError,
 				}
 				continue
 			}
 
-			count.inserts = int64(len(data.Inserts))
-			count.updates = int64(len(data.Updates))
-			count.deletes = int64(len(data.Deletes))
-		}
-
-		// Notify complete
-		callbackChan <- CallbackResult{
-			count: count,
-			err:   nil,
+			// Notify complete
+			if count.Inserts+count.Updates+count.Deletes > 0 {
+				callbackChan <- CallbackResult{
+					Count: &count,
+					Err:   nil,
+				}
+			}
 		}
 	}
 
@@ -256,9 +260,9 @@ func (p *Pipeline) replicate(
 	// Parse destination input from stream
 	input := helpers.StreamTransform(watcher, func(data datasources.DatasourceStreamResult) datasources.DatasourcePushRequest {
 		if data.Err != nil {
-			callback(CallbackResult{
-				count: nil,
-				err:   data.Err,
+			defer callback(CallbackResult{
+				Count: nil,
+				Err:   data.Err,
 			})
 		}
 		return data.Docs
@@ -274,6 +278,11 @@ func (p *Pipeline) replicate(
 
 // Watch for changes from source (`From`) and replicate them unto the destination (`To`)
 func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
+
+	// Set default logger
+	if p.Logger != nil {
+		slog.SetDefault(p.Logger)
+	}
 
 	// Get current state
 	state, ok := p.GetState(ctx)
@@ -307,15 +316,15 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 
 	log.Printf("Replication Started")
 	if config.OnReplicationStart != nil {
-		go config.OnReplicationStart()
+		go config.OnReplicationStart(state)
 	}
 
 	// Replicate changes
 	err := p.replicate(ctx, &config, func(result CallbackResult) {
-		if result.err != nil && config.OnReplicationError != nil {
-			config.OnReplicationError(result.err)
-		} else if result.count != nil && config.OnReplicationProgress != nil {
-			config.OnReplicationProgress(*result.count)
+		if result.Err != nil && config.OnReplicationError != nil {
+			config.OnReplicationError(state, result.Err)
+		} else if result.Count != nil && config.OnReplicationProgress != nil {
+			config.OnReplicationProgress(state, *result.Count)
 		}
 	})
 
@@ -350,6 +359,11 @@ func (p *Pipeline) Stream(ctx *context.Context, config PipelineConfig) error {
 // Execute migration from source (`From`) to destination (`To`)
 func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
+	// Set default logger
+	if p.Logger != nil {
+		slog.SetDefault(p.Logger)
+	}
+
 	// Get current state
 	state, ok := p.GetState(ctx)
 	var stateMutex sync.RWMutex // To synchronize concurrent state updates
@@ -360,7 +374,8 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		state.MigrationStatus == states.MigrationStatusFailed {
 		state = states.State{
 			MigrationStatus:    states.MigrationStatusStarting,
-			MigrationOffset:    json.Number(strconv.FormatInt(config.MigrationStartOffset, 10)),
+			MigrationOffset:    json.Number(strconv.FormatInt(0, 10)),
+			MigrationTotal:     json.Number(strconv.FormatInt(0, 10)),
 			MigrationStartedAt: time.Now(),
 		}
 		p.setState(ctx, state)
@@ -390,8 +405,8 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	parallel := helpers.ParallelConfig{
 		Units:       config.MigrationParallelLoad,
-		Total:       total,
 		BatchSize:   config.MigrationBatchSize,
+		Total:       total,
 		StartOffset: startOffet,
 	}
 
@@ -409,22 +424,29 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		// Wait forever
 		defer wg.Wait()
 	} else if total == 0 {
+
+		msg := fmt.Sprintf("pipeline (%s) migration stopped due to empty source", p.ID)
+
 		// Nothing to migrate
+		state.MigrationStatus = states.MigrationStatusStopped
+		state.MigrationIssue = msg
+		state.MigrationStoppedAt = time.Now()
+		p.setState(ctx, state)
+
 		return &PipelineError{
 			Code:    PipelineErrorProcessing,
-			Message: fmt.Sprintf("pipeline (%s) migration stopped due to empty source", p.ID),
+			Message: msg,
 		}
 	}
 
 	// Track: In Progress
 	state.MigrationStatus = states.MigrationStatusInProgress
 	state.MigrationOffset = json.Number(strconv.FormatInt(startOffet, 10))
-	state.MigrationTotal = json.Number(strconv.FormatInt(0, 10))
 	p.setState(ctx, state)
 
 	log.Printf("Migration Started. Total: %d, Offset: %d", total, startOffet)
 	if config.OnMigrationStart != nil {
-		go config.OnMigrationStart()
+		go config.OnMigrationStart(state)
 	}
 
 	// Fetch from source
@@ -439,12 +461,17 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	// Parse destination input from source
 	input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
+		if data.Err != nil {
+			if config.OnMigrationError != nil {
+				go config.OnMigrationError(state, fmt.Errorf("fetch error (%s): %w", p.ID, data.Err))
+			}
+		}
 		return datasources.DatasourcePushRequest{Inserts: data.Docs}
 	})
 
 	// Send to destination
 	err := p.migrate(ctx, input, func(result CallbackResult) {
-		// Lock state for simultaneous progress updates
+		// Lock state for concurrent progress updates
 		stateMutex.Lock()
 		defer stateMutex.Unlock()
 
@@ -453,20 +480,20 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 		// Track migration progress
 		state.MigrationStatus = states.MigrationStatusInProgress
-		if result.err != nil {
-			state.MigrationIssue = result.err.Error()
+		if result.Err != nil {
+			state.MigrationIssue = result.Err.Error()
 
-			log.Printf("Migration Error: %s", result.err.Error())
+			log.Printf("Migration Error: %s", result.Err.Error())
 			if config.OnMigrationError != nil {
-				config.OnMigrationError(result.err)
+				defer config.OnMigrationError(state, result.Err)
 			}
-		} else if result.count != nil {
-			state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+result.count.inserts, 10))
-			state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+result.count.inserts, 10))
+		} else if result.Count != nil {
+			state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+result.Count.Inserts, 10))
+			state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+result.Count.Inserts, 10))
 
 			log.Printf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset)
 			if config.OnMigrationProgress != nil {
-				config.OnMigrationProgress(*result.count)
+				defer config.OnMigrationProgress(state, *result.Count)
 			}
 		}
 

@@ -56,14 +56,14 @@ func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("Error reading state file: %s. Error: %v", path, err)
+			log.Printf("Failed reading state file: %s. Error: %v", path, err)
 		}
 		return value, false
 	}
 	// Parse JSON
 	var result V
 	if err := json.Unmarshal(data, &result); err != nil {
-		log.Printf("Error unmarshaling state file: %s. Error: %v", path, err)
+		log.Printf("Failed unmarshaling state file: %s. Error: %v", path, err)
 		return value, false
 	}
 	return result, true

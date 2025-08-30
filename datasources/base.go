@@ -11,16 +11,25 @@ type DatasourcePushRequest struct {
 	Updates map[string]map[string]any
 	Deletes []string
 }
+type DatasourcePushCount struct {
+	Inserts int64
+	Updates int64
+	Deletes int64
+}
+
 type DatasourceFetchRequest struct {
-	// Number of items to fetch. 0 to fetch all
+	// List of IDs to fetch (optional)
+	IDs []string
+	// Number of items to fetch. 0 to fetch all (optional)
 	Size int64
-	// Offset to start fetching from. 0 to start from beginning
+	// Offset to start fetching from. 0 to start from beginning (optional)
 	Offset int64
 }
 type DatasourceStreamRequest struct {
-	// Number of items to batch. 0 to disable batching
+	// TODO: Add support for StartFromTimestamp
+	// Number of items to batch. 0 to disable batching (optional)
 	BatchSize int64
-	// How long to wait to accumulate batch
+	// How long to wait to accumulate batch (optional)
 	BatchWindowSeconds int64
 }
 type DatasourceFetchResult struct {
@@ -40,10 +49,10 @@ type Datasource interface {
 	Init()
 	// Get total count
 	Count(ctx *context.Context, request *DatasourceFetchRequest) int64
-	// Get data
+	// Fetch data
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
 	// Insert/Update/Delete data
-	Push(ctx *context.Context, request *DatasourcePushRequest) error
+	Push(ctx *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error)
 	// Listen to Change Data Streams or periodically watch for changes
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
 	// Clear data source
@@ -71,7 +80,7 @@ func LoadCSV(ctx *context.Context,
 				}
 			}
 		}
-		err = ds.Push(ctx, &DatasourcePushRequest{
+		_, err = ds.Push(ctx, &DatasourcePushRequest{
 			Inserts: data,
 		})
 		if err != nil {

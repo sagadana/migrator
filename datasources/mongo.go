@@ -18,8 +18,12 @@ type MongoDatasourceConfigs struct {
 	DatabaseName   string
 	CollectionName string
 
+	// Monodb Filter Query
 	Filter map[string]any
-	Sort   map[string]any
+	// Monodb Sort Query
+	Sort map[string]any
+	// Use accurate counting instead of estimated count (slower)
+	AccurateCount bool
 
 	// Provide custom mongo client
 	WithClient func(ctx *context.Context, uri string) (*mongo.Client, error)
@@ -31,8 +35,10 @@ type MongoDatasource struct {
 	client         *mongo.Client
 	databaseName   string
 	collectionName string
-	filter         bson.D
+	filter         bson.M
 	sort           bson.D
+	// Use accurate counting instead of estimated count (slower)
+	accurateCount bool
 
 	onInit func(client *mongo.Client) error
 }
@@ -66,29 +72,27 @@ func ConnectToMongoDB(ctx *context.Context, config MongoDatasourceConfigs) *mong
 }
 
 // NewMongoDatasource creates and returns a new instance of MongoDatasource.
-// - ctx: Context.
-// - uri: Database connection uri.
-// - databaseName: The database name.
-// - collectionName: The collection name.
+//   - ctx: Context.
+//   - uri: Database connection uri.
+//   - databaseName: The database name.
+//   - collectionName: The collection name.
 func NewMongoDatasource(ctx *context.Context,
 	config MongoDatasourceConfigs,
 ) *MongoDatasource {
-	var mongoFilter bson.D
-	for k, v := range config.Filter {
-		mongoFilter = append(mongoFilter, bson.E{Key: k, Value: v})
-	}
-
-	var mongoSort bson.D
-	for k, v := range config.Sort {
-		mongoSort = append(mongoSort, bson.E{Key: k, Value: v})
+	mongoSort := bson.D{}
+	if config.Sort != nil {
+		for k, v := range config.Sort {
+			mongoSort = append(mongoSort, bson.E{Key: k, Value: v})
+		}
 	}
 
 	ds := &MongoDatasource{
 		client:         ConnectToMongoDB(ctx, config),
 		databaseName:   config.DatabaseName,
 		collectionName: config.CollectionName,
-		filter:         mongoFilter,
+		filter:         config.Filter,
 		sort:           mongoSort,
+		accurateCount:  config.AccurateCount,
 		onInit:         config.OnInit,
 	}
 
@@ -96,6 +100,10 @@ func NewMongoDatasource(ctx *context.Context,
 	ds.Init()
 
 	return ds
+}
+
+func (ds *MongoDatasource) Client() *mongo.Client {
+	return ds.client
 }
 
 // Initialize Data source
@@ -111,10 +119,20 @@ func (ds *MongoDatasource) Init() {
 func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) int64 {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
-	countOption := options.EstimatedDocumentCountOptions{}
-	count, err := collection.EstimatedDocumentCount(*ctx, &countOption)
-	if err != nil || count == 0 {
-		return 0
+	var count int64
+	var err error
+	if ds.accurateCount {
+		filter := new(any)
+		countOption := options.CountOptions{}
+		count, err = collection.CountDocuments(*ctx, filter, &countOption)
+	}
+
+	if !ds.accurateCount || err != nil {
+		countOption := options.EstimatedDocumentCountOptions{}
+		count, err = collection.EstimatedDocumentCount(*ctx, &countOption)
+		if err != nil || count == 0 {
+			return 0
+		}
 	}
 
 	offset := int64(0)
@@ -133,11 +151,19 @@ func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchR
 func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
+	filter := ds.filter
+
 	findOptions := options.Find()
 	findOptions.SetSort(ds.sort)
-	findOptions.SetSkip(int64(request.Offset))
-	findOptions.SetLimit(int64(request.Size))
-	cursor, err := collection.Find(*ctx, ds.filter, findOptions)
+
+	if len(request.IDs) > 0 {
+		filter[MongoIDField] = bson.M{"$in": request.IDs}
+	} else {
+		findOptions.SetSkip(int64(request.Offset))
+		findOptions.SetLimit(int64(request.Size))
+	}
+
+	cursor, err := collection.Find(*ctx, filter, findOptions)
 	if err != nil {
 		return DatasourceFetchResult{
 			Err:   err,
@@ -153,11 +179,16 @@ func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 	for cursor.Next(*ctx) {
 		doc := make(map[string]any)
 		if err = cursor.Decode(&doc); err != nil {
-			doc = map[string]any{}
+			return DatasourceFetchResult{Err: fmt.Errorf("mongodb fetch error: failed to decode doc: %w", err)}
 		}
 		docs = append(docs, doc)
 	}
 
+	if len(request.IDs) > 0 {
+		return DatasourceFetchResult{
+			Docs: docs,
+		}
+	}
 	return DatasourceFetchResult{
 		Start: int64(request.Offset),
 		End:   int64(request.Offset + request.Size),
@@ -166,10 +197,11 @@ func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 }
 
 // Insert/Update/Delete data
-func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushRequest) error {
+func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error) {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
 	docs := make([]mongo.WriteModel, 0)
+	count := *new(DatasourcePushCount)
 
 	// Insert
 	if len(request.Inserts) > 0 {
@@ -181,7 +213,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	// Update
 	if len(request.Updates) > 0 {
 		for key, item := range request.Updates {
-			delete(item, MongoIDField) // Remove mongoId from update payload - prevent errors
+			delete(item, MongoIDField) // Remove mongo ID from update payload - prevent errors
 			docs = append(docs,
 				mongo.NewUpdateOneModel().
 					SetFilter(bson.M{MongoIDField: key}).
@@ -193,19 +225,25 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 	// Delete
 	if len(request.Deletes) > 0 {
-		for _, item := range request.Deletes {
-			docs = append(docs, mongo.NewDeleteOneModel().SetFilter(bson.M{MongoIDField: item}))
+		if len(request.Deletes) > 0 {
+			docs = append(docs, mongo.NewDeleteManyModel().SetFilter(bson.M{MongoIDField: bson.M{"$in": request.Deletes}}))
 		}
 	}
 
 	if len(docs) > 0 {
-		_, err := collection.BulkWrite(*ctx, docs)
+		ordered := true
+		result, err := collection.BulkWrite(*ctx, docs, &options.BulkWriteOptions{
+			Ordered: &ordered,
+		})
 		if err != nil {
-			return fmt.Errorf("mongodb bulk write error: %w", err)
+			return count, fmt.Errorf("mongodb bulk write error: %w", err)
 		}
+		count.Inserts = result.InsertedCount
+		count.Updates = (result.ModifiedCount + result.UpsertedCount)
+		count.Deletes = result.DeletedCount
 	}
 
-	return nil
+	return count, nil
 }
 
 // Listen to Change Data Streams (CDC) if available
@@ -216,6 +254,52 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 	batchSize := max(request.BatchSize, 1)
 	batchWindow := max(request.BatchWindowSeconds, 1)
 
+	// Define the Batch event Processing Logic
+	// This is the callback function that handles the collected events.
+	// For this example, it just prints the operation type and document key for each event.
+	processEvents := func(batch []map[string]any) DatasourcePushRequest {
+		inserts, updates, deletes := []map[string]any{}, map[string]map[string]any{}, []string{}
+		for _, event := range batch {
+			opType := event["operationType"].(string)
+			switch opType {
+			case "insert":
+				doc, ok := event["fullDocument"].(map[string]any)
+				if !ok {
+					continue
+				}
+				inserts = append(inserts, doc)
+
+			case "update":
+				docKey, ok := event["documentKey"].(map[string]any)
+				if !ok {
+					continue
+				}
+
+				doc, ok := event["fullDocument"].(map[string]any)
+				if !ok {
+					continue
+				}
+
+				id := docKey[MongoIDField]
+				updates[id.(string)] = doc
+
+			case "delete":
+				docKey, ok := event["documentKey"].(map[string]any)
+				if !ok {
+					continue
+				}
+
+				id := docKey[MongoIDField]
+				deletes = append(deletes, id.(string))
+			}
+		}
+		return DatasourcePushRequest{
+			Inserts: inserts,
+			Updates: updates,
+			Deletes: deletes,
+		}
+	}
+
 	go func(bgCtx context.Context) {
 		defer close(out)
 
@@ -225,6 +309,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		// We set it to our batch window duration for alignment.
 		streamOpts := options.ChangeStream().
 			SetFullDocument(options.UpdateLookup).
+			SetBatchSize(int32(batchSize)).
 			SetMaxAwaitTime(time.Duration(batchWindow) * time.Second)
 
 		// Watch all changes for insert, update, delete
@@ -259,52 +344,6 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		// Buffer to hold the batch of change events
 		batch := make([]map[string]any, 0, batchSize)
 
-		// Define the Batch event Processing Logic
-		// This is the callback function that handles the collected events.
-		// For this example, it just prints the operation type and document key for each event.
-		processEvents := func(batch []map[string]any) DatasourcePushRequest {
-			inserts, updates, deletes := []map[string]any{}, map[string]map[string]any{}, []string{}
-			for _, event := range batch {
-				opType := event["operationType"].(string)
-				switch opType {
-				case "insert":
-					doc, ok := event["fullDocument"].(map[string]any)
-					if !ok {
-						continue
-					}
-					inserts = append(inserts, doc)
-
-				case "update":
-					docKey, ok := event["documentKey"].(map[string]any)
-					if !ok {
-						continue
-					}
-
-					doc, ok := event["fullDocument"].(map[string]any)
-					if !ok {
-						continue
-					}
-
-					id := docKey[MongoIDField]
-					updates[id.(string)] = doc
-
-				case "delete":
-					docKey, ok := event["documentKey"].(map[string]any)
-					if !ok {
-						continue
-					}
-
-					id := docKey[MongoIDField]
-					deletes = append(deletes, id.(string))
-				}
-			}
-			return DatasourcePushRequest{
-				Inserts: inserts,
-				Updates: updates,
-				Deletes: deletes,
-			}
-		}
-
 		log.Printf("Watching collection '%s' for changes...", ds.collectionName)
 		// Use a select statement to handle multiple concurrent events:
 		// 1. A new change event arrives.
@@ -335,10 +374,9 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 				hasNext := stream.TryNext(tryCtx)
 				cancel()
 				if hasNext {
-					if err := stream.Decode(&event); err != nil {
-						event = map[string]any{}
+					if err := stream.Decode(&event); err == nil {
+						batch = append(batch, event)
 					}
-					batch = append(batch, event)
 
 					// Send if batch size reached
 					if len(batch) >= int(batchSize) {
@@ -359,5 +397,6 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 // Clear data source
 func (ds *MongoDatasource) Clear(ctx *context.Context) error {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
-	return collection.Drop(*ctx)
+	_, err := collection.DeleteMany(*ctx, bson.D{})
+	return err
 }
