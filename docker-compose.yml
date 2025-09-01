@@ -155,7 +155,6 @@ services:
       - MONGO_RS=${MONGO_RS}
     volumes:
       - ./tests/mongo/replica-init.sh:/scripts/replica-init.sh
-      - ./replica.key:/data/replica.key
     networks:
       - dev-network
     entrypoint:
