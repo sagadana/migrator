@@ -15,9 +15,13 @@ import (
 )
 
 type ParallelConfig struct {
-	Units       int
-	Total       int64
-	BatchSize   int64
+	// Number of parallel workers
+	Units int
+	// Total items
+	Total int64
+	// Number of items to process per batch
+	BatchSize int64
+	// What position to start processing from
 	StartOffset int64
 }
 
@@ -27,12 +31,12 @@ type ChunkJob struct {
 	Size   int64
 }
 
-// Process batch reads in parallel
-func ParallelRead[T any](
+// Process batch items in parallel
+func ParallelBatch(
 	ctx *context.Context,
 	config *ParallelConfig,
-	fn func(ctx *context.Context, job int, size int64, offset int64) T,
-) <-chan T {
+	fn func(ctx *context.Context, job int, size int64, offset int64),
+) {
 
 	units := config.Units
 	total := config.Total
@@ -63,25 +67,24 @@ func ParallelRead[T any](
 
 	// Create parallel job channels
 	jobs := make(chan ChunkJob, batches)
-	out := make(chan T)
 	wg := new(sync.WaitGroup)
 
 	// Create parallel workers
-	for i := range units {
+	for range units {
 		wg.Add(1)
 
-		go func(wrk int) {
+		go func() {
 			defer wg.Done()
 
 			for job := range jobs {
-				out <- fn(ctx, job.ID, job.Size, job.Offset)
+				fn(ctx, job.ID, job.Size, job.Offset)
 			}
-		}(i)
+		}()
 	}
 
 	// Send jobs to workers
 	log.Printf(
-		"Parallel Read (Started): Units: %d, Offset: %d, Total: %d, Batches: %d, Batch Size: %d, Batch Size Left: %d\n",
+		"Parallel Batch Started: Workers: %d, Offset: %d, Total: %d, Batches: %d, Batch Size: %d, Batch Size Left: %d\n",
 		units, startOffset, total, batches, batchSize, batchSizeLeft,
 	)
 
@@ -99,14 +102,8 @@ func ParallelRead[T any](
 	}
 	close(jobs) // Close job channel - no more jobs to be submitted
 
-	// Background waits for results to be collected
-	// Close out channel after
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-
-	return out
+	// Waits for workers to complete
+	wg.Wait()
 }
 
 // Transform stream contents
@@ -114,7 +111,8 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 	output := make(chan Out)
 	go func() {
 		defer close(output)
-		for data := range input {
+		var data In // reusable var - reduce memory consumption and gc work
+		for data = range input {
 			output <- fn(data)
 		}
 	}()
@@ -136,8 +134,8 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]any, error) {
 	}
 
 	go func() {
-		defer file.Close()
 		defer close(out)
+		defer file.Close()
 
 		// Create a CSV reader
 		reader := csv.NewReader(file)

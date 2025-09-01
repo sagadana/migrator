@@ -1,11 +1,45 @@
 services:
-  # Tester
-  tester:
+  # ---------------------
+  # Test
+  # ---------------------
+  tester-state:
     build:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -o /usr/src/app/app.test
+    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/states_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  tester-ds:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/datasources_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-a:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+
+  tester-pipe:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/pipelines_test.go
     networks:
       - dev-network
     env_file:

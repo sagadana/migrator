@@ -3,7 +3,7 @@ name: test
 on: [workflow_call] # allow this workflow to be called from other workflows
 
 jobs:
-  run:
+  states:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -14,5 +14,31 @@ jobs:
         with:
           compose-file: ./docker-compose.yml
           compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--exit-code-from tester"
-          services: "tester"
+          up-flags: "--exit-code-from tester-state"
+          services: "tester-state"
+  datasources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-ds"
+          services: "tester-ds"
+  pipelines:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-pipe"
+          services: "tester-pipe"

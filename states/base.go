@@ -3,7 +3,12 @@ package states
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+)
+
+var (
+	ErrClosed = errors.New("store closed")
 )
 
 type MigrationStatusType string
@@ -19,7 +24,6 @@ const (
 const (
 	ReplicationStatusStarting  ReplicationStatusType = "starting"
 	ReplicationStatusPaused    ReplicationStatusType = "paused"
-	ReplicationStatusFailed    ReplicationStatusType = "failed"
 	ReplicationStatusStreaming ReplicationStatusType = "streaming"
 )
 

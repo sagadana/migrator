@@ -4,9 +4,10 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Features
 
-- Schema transformation
-- Parallel Loading: Break data into chunks and load in parallel
+- Batch processing
+- Source transformation
 - Auto Resuming: Resume from last success position if failed
+- Parallel Procesing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
 
 ## Datasources
@@ -73,7 +74,7 @@ func main() {
 
     // Start Migration + Replication
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-        MigrationParallelLoad:    5,
+        MigrationParallelWorkers:    5,
         MigrationBatchSize:       10,
 
         OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
@@ -99,7 +100,7 @@ func main() {
 
     // Start Migration + Replication
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-        MigrationParallelLoad:      5,
+        MigrationParallelWorkers:      5,
         MigrationBatchSize:         10,
 
         ContinuousReplication:      true,
@@ -151,6 +152,14 @@ func main() {
 
 ## Test
 
+### Test Datasources
+
 ```sh
-docker compose --env-file ./tests/.env.dev  up tester
+docker compose --env-file ./tests/.env.dev  up tester-ds
+```
+
+### Test Pipelines
+
+```sh
+docker compose --env-file ./tests/.env.dev  up tester-pipe
 ```
