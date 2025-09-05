@@ -371,8 +371,22 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 			Updates: make(map[string]map[string]any),
 			Deletes: make([]string, 0),
 		}
+		batchHashes := make(map[string]string)
+
+		// Check for duplicates in batch
+		// This helps to prevent duplicate events for new files
+		//   which may send both CREATE and WRITE events
+		isDuplicateBatchEvent := func(docID string, hash string) bool {
+			oldHash, ok := batchHashes[docID]
+			isDuplicate := ok && hash == oldHash
+			if !isDuplicate {
+				batchHashes[docID] = hash
+			}
+			return isDuplicate
+		}
 
 		slog.Info(fmt.Sprintf("Watching '%s' for changes...", ds.collectionPath))
+
 		for {
 			select {
 			case <-bgCtx.Done():
@@ -380,6 +394,13 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 				// Context has been cancelled. Process any remaining events in the batch before exiting.
 				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
 					out <- DatasourceStreamResult{Docs: batch}
+					// Reset the batch buffer
+					batch = DatasourcePushRequest{
+						Inserts: make([]map[string]any, 0),
+						Updates: make(map[string]map[string]any),
+						Deletes: make([]string, 0),
+					}
+					batchHashes = make(map[string]string)
 				}
 				return
 
@@ -393,6 +414,7 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 						Updates: make(map[string]map[string]any),
 						Deletes: make([]string, 0),
 					}
+					batchHashes = make(map[string]string)
 				}
 
 			case event, ok := <-watcher.Events:
@@ -407,28 +429,30 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 
 				docID := strings.TrimSuffix(filepath.Base(event.Name), FilePrefix)
 
-				if event.Has(fsnotify.Create) { // CREATE event
-					content, err := os.ReadFile(event.Name)
-					if err != nil {
-						continue // File might be gone again, skip
-					}
-
-					var doc map[string]any
-					if json.Unmarshal(content, &doc) == nil {
-						batch.Inserts = append(batch.Inserts, doc)
+				if event.Has(fsnotify.Remove) { // REMOVE event
+					if !isDuplicateBatchEvent(docID, helpers.CalculateHash([]byte(event.Name))) {
+						batch.Deletes = append(batch.Deletes, docID)
 					}
 				} else if event.Has(fsnotify.Write) { // WRITE event
 					content, err := os.ReadFile(event.Name)
-					if err != nil {
-						continue // File might be gone again, skip
+					if err == nil {
+						var doc map[string]any
+						if json.Unmarshal(content, &doc) == nil {
+							if !isDuplicateBatchEvent(docID, helpers.CalculateHash(content)) {
+								batch.Updates[docID] = doc
+							}
+						}
 					}
-
-					var doc map[string]any
-					if json.Unmarshal(content, &doc) == nil {
-						batch.Updates[docID] = doc
+				} else if event.Has(fsnotify.Create) { // CREATE event
+					content, err := os.ReadFile(event.Name)
+					if err == nil {
+						var doc map[string]any
+						if json.Unmarshal(content, &doc) == nil && len(doc) > 0 {
+							if !isDuplicateBatchEvent(docID, helpers.CalculateHash(content)) {
+								batch.Inserts = append(batch.Inserts, doc)
+							}
+						}
 					}
-				} else if event.Has(fsnotify.Remove) { // REMOVE event
-					batch.Deletes = append(batch.Deletes, docID)
 				}
 
 				// If batch is full, process it immediately.
@@ -440,6 +464,7 @@ func (ds *FileDatasource) Watch(ctx *context.Context, request *DatasourceStreamR
 						Updates: make(map[string]map[string]any),
 						Deletes: make([]string, 0),
 					}
+					batchHashes = make(map[string]string)
 					ticker.Reset(time.Duration(batchWindow) * time.Second)
 				}
 
