@@ -96,7 +96,13 @@ func (sm *FileStore[V]) Clear(ctx *context.Context) error {
 		return ErrClosed
 	}
 
-	return os.RemoveAll(sm.path)
+	if err := os.RemoveAll(sm.path); err != nil {
+		return fmt.Errorf("FATAL: could not clear store directory: %v", err)
+	}
+	if err := os.MkdirAll(sm.path, 0644); err != nil {
+		return fmt.Errorf("FATAL: could not recreate store directory: %v", err)
+	}
+	return nil
 }
 
 // Creates and returns a new state store.

@@ -74,10 +74,8 @@ func ParallelBatch(
 	// Create parallel workers
 	for range units {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-
 			for job := range jobs {
 				fn(ctx, job.ID, job.Size, job.Offset)
 			}

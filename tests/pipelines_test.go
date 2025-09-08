@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -60,13 +61,13 @@ func getTestStores(ctx *context.Context, instanceId string) <-chan TestStore {
 		// -----------------------
 		// 2. File
 		// -----------------------
-		// id = "file-state-store"
-		// store = states.NewFileStateStore(filepath.Join(getPipelinesTempBasePath(), instanceId), id)
-		// store.Clear(ctx)
-		// out <- TestStore{
-		// 	id:    id,
-		// 	store: store,
-		// }
+		id = "file-state-store"
+		store = states.NewFileStateStore(filepath.Join(getPipelinesTempBasePath(), instanceId), id)
+		store.Clear(ctx)
+		out <- TestStore{
+			id:    id,
+			store: store,
+		}
 	}()
 
 	return out
