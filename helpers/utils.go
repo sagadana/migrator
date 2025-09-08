@@ -7,7 +7,9 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"log"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,24 +20,24 @@ type ParallelConfig struct {
 	// Number of parallel workers
 	Units int
 	// Total items
-	Total int64
+	Total uint64
 	// Number of items to process per batch
-	BatchSize int64
+	BatchSize uint64
 	// What position to start processing from
-	StartOffset int64
+	StartOffset uint64
 }
 
 type ChunkJob struct {
 	ID     int
-	Offset int64
-	Size   int64
+	Offset uint64
+	Size   uint64
 }
 
 // Process batch items in parallel
 func ParallelBatch(
 	ctx *context.Context,
 	config *ParallelConfig,
-	fn func(ctx *context.Context, job int, size int64, offset int64),
+	fn func(ctx *context.Context, job int, size, offset uint64),
 ) {
 
 	units := config.Units
@@ -51,8 +53,8 @@ func ParallelBatch(
 	}
 
 	// Calculate chunk size
-	chunks := int64(units)
-	chunkSize := max(1, int64((float64(total / chunks))))
+	chunks := uint64(units)
+	chunkSize := max(1, uint64((float64(total / chunks))))
 	if total%chunks > 0 {
 		chunks++
 	}
@@ -88,7 +90,7 @@ func ParallelBatch(
 		units, startOffset, total, batches, batchSize, batchSizeLeft,
 	)
 
-	for i := int64(0); i < batches; i++ {
+	for i := uint64(0); i < batches; i++ {
 		size := batchSize
 		if i == batches-1 && batchSizeLeft > 0 {
 			size = batchSizeLeft
@@ -120,7 +122,7 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 }
 
 // Stream contents of a CSV File
-func StreamCSV(path string, batchSize int64) (<-chan []map[string]any, error) {
+func StreamCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
 	out := make(chan []map[string]any)
 
 	if batchSize <= 0 {
@@ -228,4 +230,19 @@ func RandomString(length int) string {
 	bytes := make([]byte, length)
 	_, _ = rand.Read(bytes)
 	return hex.EncodeToString(bytes)[:length]
+}
+
+func CreateTextLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stdout, nil))
+}
+
+func GetTempBasePath(id string) string {
+	basePath := os.Getenv("RUNNER_TEMP")
+	if basePath == "" {
+		basePath = os.Getenv("TEMP_BASE_PATH")
+		if basePath == "" {
+			basePath = os.TempDir()
+		}
+	}
+	return filepath.Join(basePath, id)
 }

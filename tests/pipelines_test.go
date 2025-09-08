@@ -3,9 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -62,13 +60,13 @@ func getTestStores(ctx *context.Context, instanceId string) <-chan TestStore {
 		// -----------------------
 		// 2. File
 		// -----------------------
-		id = "file-state-store"
-		store = states.NewFileStateStore(filepath.Join(getPipelinesTempBasePath(), instanceId), id)
-		store.Clear(ctx)
-		out <- TestStore{
-			id:    id,
-			store: store,
-		}
+		// id = "file-state-store"
+		// store = states.NewFileStateStore(filepath.Join(getPipelinesTempBasePath(), instanceId), id)
+		// store.Clear(ctx)
+		// out <- TestStore{
+		// 	id:    id,
+		// 	store: store,
+		// }
 	}()
 
 	return out
@@ -96,12 +94,12 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		}
 
 		// -----------------------
-		// 1. File
+		// 1. Memory
 		// -----------------------
 
-		id = "test-file-to-file-pipeline"
-		fromDs = datasources.NewFileDatasource(basePath, getDsName(id, "source"), IDField)
-		toDs = datasources.NewFileDatasource(basePath, getDsName(id, "destination"), IDField)
+		id = "test-mem-to-mem-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
 		fromDs.Clear(ctx)
 		toDs.Clear(ctx)
 
@@ -206,14 +204,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 
 // Get base path for temp dir
 func getPipelinesTempBasePath() string {
-	basePath := os.Getenv("RUNNER_TEMP")
-	if basePath == "" {
-		basePath = os.Getenv("TEMP_BASE_PATH")
-		if basePath == "" {
-			basePath = os.TempDir()
-		}
-	}
-	return filepath.Join(basePath, "test-pipelines")
+	return helpers.GetTempBasePath("test-pipelines")
 }
 
 // -----------------------------
@@ -222,84 +213,68 @@ func getPipelinesTempBasePath() string {
 
 // Use to test migration for a pipeline
 func testMigration(
-	title string,
 	t *testing.T,
 	ctx *context.Context,
 	pipeline *pipelines.Pipeline,
 	config *pipelines.PipelineConfig,
-) int64 {
-	fmt.Printf("\n-------------------------- %s --------------------------\n", title)
+	expectedTotal uint64,
+) uint64 {
 
 	var err error
-	previousOffset := int64(0)
 
 	config.OnMigrationError = func(state states.State, err error) {
-		t.Errorf("OnMigrationError triggered: %s", err.Error())
+		t.Errorf("❌ OnMigrationError triggered: %s", err.Error())
 	}
-
-	// Get inital state
-	state, ok := pipeline.GetState(ctx)
-	if ok {
-		previousOffset, _ = state.MigrationOffset.Int64()
-	}
-	// Get expected total
-	expectedTotal := pipeline.From.Count(ctx, &datasources.DatasourceFetchRequest{
-		Size:   config.MigrationMaxSize,
-		Offset: max(previousOffset, config.MigrationStartOffset),
-	})
 
 	// Start migration
 	err = pipeline.Start(ctx, *config)
 	if err != nil {
-		t.Errorf("failed to process migration: %s", err)
+		t.Errorf("❌ failed to process migration: %s", err)
 	}
 
 	// Get completion state
-	state, ok = pipeline.GetState(ctx)
+	state, ok := pipeline.GetState(ctx)
 	if !ok {
-		t.Errorf("failed to get migration state")
+		t.Errorf("❌ failed to get migration state")
 	}
 
 	migrationTotal, err := state.MigrationTotal.Int64()
 	if err != nil {
-		t.Errorf("failed to get migration total: %s", err)
+		t.Errorf("❌ failed to get migration total: %s", err)
 	}
 
 	migrationOffset, err := state.MigrationOffset.Int64()
 	if err != nil {
-		t.Errorf("failed to get migration offset: %s", err)
+		t.Errorf("❌ failed to get migration offset: %s", err)
 	}
 
 	toTotal := pipeline.To.Count(ctx, &datasources.DatasourceFetchRequest{})
 
 	// Ensure all data was migrated
 	if state.MigrationStatus != states.MigrationStatusCompleted {
-		t.Errorf("migration failed. Expected Status: '%s', Got '%s'", string(states.MigrationStatusCompleted), string(state.MigrationStatus))
+		t.Errorf("❌ migration failed. Expected Status: '%s', Got '%s'", string(states.MigrationStatusCompleted), string(state.MigrationStatus))
 	}
 	if expectedTotal != toTotal {
-		t.Errorf("migration failed. Expected Migrated Total: '%d', Got '%d'", expectedTotal, toTotal)
+		t.Errorf("❌ migration failed. Expected Migrated Total: '%d', Got '%d'", expectedTotal, toTotal)
 	}
-	if migrationTotal != toTotal {
-		t.Errorf("migration failed. Expected State Total: '%d', Got '%d'", toTotal, migrationTotal)
+	if uint64(migrationTotal) != config.MigrationMaxSize {
+		t.Errorf("❌ migration failed. Expected State Total: '%d', Got '%d'", config.MigrationMaxSize, migrationTotal)
 	}
-	if migrationOffset != config.MigrationStartOffset+migrationTotal {
-		t.Errorf("migration failed. Expected State Offset: '%d', Got '%d'", config.MigrationStartOffset+migrationTotal, migrationOffset)
+	if uint64(migrationOffset) != config.MigrationStartOffset+uint64(migrationTotal) {
+		t.Errorf("❌ migration failed. Expected State Offset: '%d', Got '%d'", config.MigrationStartOffset+uint64(migrationTotal), migrationOffset)
 	}
 
-	return migrationTotal
+	return uint64(migrationTotal)
 }
 
 // Use to test continous replication for a pipeline
 func testReplication(
-	title string,
 	t *testing.T,
 	ctx *context.Context,
 	pipeline *pipelines.Pipeline,
 	config *pipelines.PipelineConfig,
 	replicationOnly bool,
 ) {
-	fmt.Printf("\n-------------------------- %s --------------------------\n", title)
-
 	crStart := make(chan bool, 1)
 	crWg := new(sync.WaitGroup)
 	crCtx, crCancel := context.WithTimeout(*ctx, time.Duration(10*time.Second))
@@ -348,11 +323,11 @@ func testReplication(
 			Inserts: inserts,
 		})
 		if err != nil {
-			t.Errorf("failed to perform background push (inserts): %s", err.Error())
+			t.Errorf("❌ failed to perform background push (inserts): %s", err.Error())
 			return
 		}
-		if count.Inserts != int64(len(inserts)) {
-			t.Errorf("failed to perform background push (inserts): Expected '%d' docs inserted, Got '%d'", len(inserts), count.Inserts)
+		if count.Inserts != uint64(len(inserts)) {
+			t.Errorf("❌ failed to perform background push (inserts): Expected '%d' docs inserted, Got '%d'", len(inserts), count.Inserts)
 			return
 		}
 		// Add inserted item ids
@@ -392,11 +367,11 @@ func testReplication(
 			Updates: updates,
 		})
 		if err != nil {
-			t.Errorf("failed to perform background push (updates): %s", err.Error())
+			t.Errorf("❌ failed to perform background push (updates): %s", err.Error())
 			return
 		}
-		if count.Updates != int64(len(updates)) {
-			t.Errorf("failed to perform background push (updates): Expected '%d' docs updates, Got '%d'", len(updates), count.Updates)
+		if count.Updates != uint64(len(updates)) {
+			t.Errorf("❌ failed to perform background push (updates): Expected '%d' docs updates, Got '%d'", len(updates), count.Updates)
 			return
 		}
 		// Add updated item ids
@@ -409,11 +384,11 @@ func testReplication(
 			Deletes: deletes,
 		})
 		if err != nil {
-			t.Errorf("failed to perform background push (deletes): %s", err.Error())
+			t.Errorf("❌ failed to perform background push (deletes): %s", err.Error())
 			return
 		}
-		if count.Deletes != int64(len(deletes)) {
-			t.Errorf("failed to perform background push (deletes): Expected '%d' docs deleted, Got '%d'", len(deletes), count.Deletes)
+		if count.Deletes != uint64(len(deletes)) {
+			t.Errorf("❌ failed to perform background push (deletes): Expected '%d' docs deleted, Got '%d'", len(deletes), count.Deletes)
 			return
 		}
 		// Add deleted item ids
@@ -424,7 +399,7 @@ func testReplication(
 	config.ContinuousReplication = true
 
 	config.OnReplicationError = func(state states.State, err error) {
-		t.Errorf("OnReplicationError triggered: %s", err.Error())
+		t.Errorf("❌ OnReplicationError triggered: %s", err.Error())
 	}
 	config.OnReplicationProgress = func(state states.State, count datasources.DatasourcePushCount) {
 		t.Logf("OnReplicationProgress triggered: Changes: %d", count.Inserts+count.Updates+count.Deletes)
@@ -439,7 +414,7 @@ func testReplication(
 		}
 		err = pipeline.Stream(&crCtx, *config)
 		if err != nil {
-			t.Errorf("continuous replication failed: %s", err.Error())
+			t.Errorf("❌ continuous replication failed: %s", err.Error())
 		}
 	} else {
 		config.OnMigrationStopped = func(_ states.State) {
@@ -450,7 +425,7 @@ func testReplication(
 		}
 		err = pipeline.Start(&crCtx, *config)
 		if err != nil {
-			t.Errorf("migration + continuous replication failed: %s", err.Error())
+			t.Errorf("❌ migration + continuous replication failed: %s", err.Error())
 		}
 	}
 
@@ -464,23 +439,23 @@ func testReplication(
 	// Ensure replication was stopped gracefuly
 	state, ok := pipeline.GetState(ctx)
 	if !ok {
-		t.Errorf("failed to get replication state: %s", err)
+		t.Errorf("❌ failed to get replication state: %s", err)
 	}
 	if state.ReplicationStatus != states.ReplicationStatusPaused {
-		t.Errorf("continuous replication failed. Expected status: '%s', Got '%s'", string(states.ReplicationStatusPaused), string(state.ReplicationStatus))
+		t.Errorf("❌ continuous replication failed. Expected status: '%s', Got '%s'", string(states.ReplicationStatusPaused), string(state.ReplicationStatus))
 	}
 
 	// Ensure all background changes to source were replicated correctly unto the destination
 	// Fetch items from the destination to datasource to update
 
 	if len(insertedIDs) != expectdInsertCount {
-		t.Errorf("continuous replication (inserts) failed. Expected '%d' ids, Got '%d'", expectdInsertCount, len(insertedIDs))
+		t.Errorf("❌ continuous replication (inserts) failed. Expected '%d' ids, Got '%d'", expectdInsertCount, len(insertedIDs))
 	}
 	if len(updatedIDs) != expectdUpdateCount {
-		t.Errorf("continuous replication (updates) failed. Expected '%d' ids, Got '%d'", expectdUpdateCount, len(updatedIDs))
+		t.Errorf("❌ continuous replication (updates) failed. Expected '%d' ids, Got '%d'", expectdUpdateCount, len(updatedIDs))
 	}
 	if len(deletedIDs) != expectdDeleteCount {
-		t.Errorf("continuous replication (deletes) failed. Expected '%d' ids, Got '%d'", expectdDeleteCount, len(deletedIDs))
+		t.Errorf("❌ continuous replication (deletes) failed. Expected '%d' ids, Got '%d'", expectdDeleteCount, len(deletedIDs))
 	}
 
 	// --- Update -- //
@@ -488,13 +463,13 @@ func testReplication(
 		IDs: updatedIDs,
 	})
 	if len(result.Docs) != len(updatedIDs) {
-		t.Errorf("continuous replication results (updates) failed. Expected '%d' docs, Got '%d'", len(updatedIDs), len(result.Docs))
+		t.Errorf("❌ continuous replication results (updates) failed. Expected '%d' docs, Got '%d'", len(updatedIDs), len(result.Docs))
 	}
 	for _, doc := range result.Docs {
 		id := doc[IDField]
 		_, ok := doc[CRUpdateField]
 		if !ok {
-			t.Errorf("continuous replication results (updates) failed. Expected '%s' field in '%s' doc", CRUpdateField, id)
+			t.Errorf("❌ continuous replication results (updates) failed. Expected '%s' field in '%s' doc", CRUpdateField, id)
 		}
 	}
 
@@ -503,7 +478,7 @@ func testReplication(
 		IDs: deletedIDs,
 	})
 	if len(result.Docs) != 0 {
-		t.Errorf("continuous replication results (deletes) failed. Expected '%d' docs to be deleted", len(deletedIDs))
+		t.Errorf("❌ continuous replication results (deletes) failed. Expected '%d' docs to be deleted", len(deletedIDs))
 	}
 }
 
@@ -521,88 +496,114 @@ func TestPipelineImplementations(t *testing.T) {
 	instanceId := helpers.RandomString(6)
 
 	for tp := range getTestPipelines(&ctx, instanceId) {
+		// t.Parallel() // TODO: Try enable
 
 		t.Run(tp.id, func(t *testing.T) {
-			t.Parallel()
 
 			// Clean up - after
-			defer tp.source.Clear(&ctx)
 			defer tp.destination.Clear(&ctx)
 
 			// Run tests for different state store types
 			for st := range getTestStores(&ctx, fmt.Sprintf("%s-%s", tp.id, instanceId)) {
 
-				// Clear destination before each run
-				tp.destination.Clear(&ctx)
-
-				fmt.Println("\n---------------------------------------------------------------------------------")
+				fmt.Println("\n-------------------------------------------------------------------------------------------------")
 				t.Run(fmt.Sprintf("%s-%s", tp.id, st.id), func(t *testing.T) {
-					fmt.Println("---------------------------------------------------------------------------------")
+					fmt.Println("-----------------------------------------------------------------------------------------------")
 
 					// Clean up - after
-					// defer st.store.Clear(&ctx)
+					defer st.store.Clear(&ctx)
 
 					pipeline := pipelines.Pipeline{
 						ID:     tp.id,
 						From:   tp.source,
 						To:     tp.destination,
 						Store:  st.store,
-						Logger: slog.New(slog.NewTextHandler(os.Stdout, nil)),
+						Logger: helpers.CreateTextLogger(),
 					}
 
 					// ------------------------
 					// 1. Migration only
 					// ------------------------
 
-					maxSize := int64(30)
-					startOffset := int64(20)
+					t.Run("Migration", func(t *testing.T) {
+						// Clear first
+						tp.destination.Clear(&ctx)
+						st.store.Clear(&ctx)
 
-					migrationTotal := testMigration(
-						"Migration only",
-						t, &ctx, &pipeline, &pipelines.PipelineConfig{
-							MigrationParallelWorkers: 4,
-							MigrationBatchSize:       4,
-							MigrationMaxSize:         maxSize,
-							MigrationStartOffset:     startOffset,
-						},
-					)
+						// 1. First round
+						maxSize := uint64(30)
+						startOffset := uint64(0)
+						migrationTotal := testMigration(
+							t, &ctx, &pipeline, &pipelines.PipelineConfig{
+								MigrationParallelWorkers: 4,
+								MigrationBatchSize:       4,
+								MigrationMaxSize:         maxSize,
+								MigrationStartOffset:     startOffset,
+							},
+							maxSize,
+						)
+
+						// 2. Resume from last round
+						maxSize = 20
+						startOffset += migrationTotal
+						testMigration(
+							t, &ctx, &pipeline, &pipelines.PipelineConfig{
+								MigrationParallelWorkers: 4,
+								MigrationBatchSize:       4,
+								MigrationMaxSize:         maxSize,
+								MigrationStartOffset:     startOffset,
+							},
+							maxSize+migrationTotal,
+						)
+					})
 
 					// --------------------------------------------------------------------
 					// 2. Migration (with continuous replication enabled)
 					// --------------------------------------------------------------------
 
-					maxSize = 20
-					startOffset += migrationTotal
-					// replicationBatchSize := int64(10)
-					// replicationBatchWindowSecs := int64(1)
+					t.Run("Migration_And_Continuous_Replication)", func(t *testing.T) {
+						// Clear first
+						tp.destination.Clear(&ctx)
+						st.store.Clear(&ctx)
 
-					// testReplication(
-					// 	"Migration (with continuous replication enabled)",
-					// 	t, &ctx, &pipeline, &pipelines.PipelineConfig{
-					// 		MigrationParallelWorkers:     4,
-					// 		MigrationBatchSize:         5,
-					// 		MigrationMaxSize:           maxSize,
-					// 		MigrationStartOffset:       startOffset,
-					// 		ContinuousReplication:      true,
-					// 		ReplicationBatchSize:       replicationBatchSize,
-					// 		ReplicationBatchWindowSecs: replicationBatchWindowSecs,
-					// 	}, false,
-					// )
+						maxSize := uint64(30)
+						startOffset := uint64(10)
+						replicationBatchSize := uint64(10)
+						replicationBatchWindowSecs := uint64(1)
+						testReplication(
+							t, &ctx, &pipeline, &pipelines.PipelineConfig{
+								MigrationParallelWorkers:   4,
+								MigrationBatchSize:         5,
+								MigrationMaxSize:           maxSize,
+								MigrationStartOffset:       startOffset,
+								ContinuousReplication:      true,
+								ReplicationBatchSize:       replicationBatchSize,
+								ReplicationBatchWindowSecs: replicationBatchWindowSecs,
+							}, false,
+						)
+					})
 
 					// -------------------------------
 					// 3. Continuous replication only
 					// -------------------------------
 
-					// testReplication(
-					// 	"Continuous replication only",
-					// 	t, &ctx, &pipeline, &pipelines.PipelineConfig{
-					// 		ContinuousReplication:      true,
-					// 		ReplicationBatchSize:       replicationBatchSize,
-					// 		ReplicationBatchWindowSecs: replicationBatchWindowSecs,
-					// 	}, true,
-					// )
+					t.Run("Continuous_Replication", func(t *testing.T) {
+						// Clear first
+						tp.destination.Clear(&ctx)
+						st.store.Clear(&ctx)
 
-					fmt.Print("\n---------------------------------------------------------------------------------\n\n")
+						replicationBatchSize := uint64(10)
+						replicationBatchWindowSecs := uint64(1)
+						testReplication(
+							t, &ctx, &pipeline, &pipelines.PipelineConfig{
+								ContinuousReplication:      true,
+								ReplicationBatchSize:       replicationBatchSize,
+								ReplicationBatchWindowSecs: replicationBatchWindowSecs,
+							}, true,
+						)
+					})
+
+					fmt.Print("\n-------------------------------------------------------------------------------------------\n\n")
 				})
 			}
 		})

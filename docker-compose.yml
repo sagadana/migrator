@@ -7,7 +7,7 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/states_test.go
+    command: go test -v /usr/src/app/tests/states_test.go
     networks:
       - dev-network
     env_file:
@@ -21,7 +21,7 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/datasources_test.go
+    command: go test -v /usr/src/app/tests/datasources_test.go
     networks:
       - dev-network
     env_file:
@@ -39,7 +39,7 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -o /usr/src/app/app.test /usr/src/app/tests/pipelines_test.go
+    command: go test -v /usr/src/app/tests/pipelines_test.go
     networks:
       - dev-network
     env_file:

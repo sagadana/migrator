@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/sagadana/migrator/helpers"
 	"github.com/sagadana/migrator/states"
 )
 
@@ -40,14 +40,7 @@ func statesEqual(a, b states.State) bool {
 
 // Get base path for temp dir
 func getStatesTempBasePath() string {
-	basePath := os.Getenv("RUNNER_TEMP")
-	if basePath == "" {
-		basePath = os.Getenv("TEMP_BASE_PATH")
-		if basePath == "" {
-			basePath = os.TempDir()
-		}
-	}
-	return filepath.Join(basePath, "test-states")
+	return helpers.GetTempBasePath("test-states")
 }
 
 // Retrieve Test States
@@ -115,7 +108,7 @@ func TestStateJSONRoundTrip(t *testing.T) {
 	}
 
 	if !statesEqual(original, decoded) {
-		t.Errorf("state mismatch after JSON round-trip:\nexpected %+v\ngot      %+v", original, decoded)
+		t.Errorf("❌ state mismatch after JSON round-trip:\nexpected %+v\ngot      %+v", original, decoded)
 	}
 }
 
@@ -125,6 +118,7 @@ func TestStateStoreLifecycle(t *testing.T) {
 		time.Sleep(1 * time.Second) // Wait for logs
 		cancel()
 	}()
+	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
 
 	for st := range getTestStates(&ctx) {
 
@@ -133,75 +127,132 @@ func TestStateStoreLifecycle(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
 			// 1) Loading a missing key should return ok=false
-			if _, ok := st.store.Load(&ctx, "missing"); ok {
-				t.Error("expected Load to return ok=false for missing key")
-			}
+			t.Run("LoadMissingKey", func(t *testing.T) {
+				if _, ok := st.store.Load(&ctx, "missing"); ok {
+					t.Error("❌ expected Load to return ok=false for missing key")
+				}
+			})
 
 			// 2) Store and Load a populated State
-			now1 := time.Now().Truncate(time.Millisecond)
-			now2 := now1.Add(time.Minute)
-			original := states.State{
-				MigrationStatus:    states.MigrationStatusInProgress,
-				MigrationTotal:     json.Number("100"),
-				MigrationOffset:    json.Number("42"),
-				MigrationIssue:     "none",
-				MigrationStartedAt: now1,
-				MigrationStoppedAt: now2,
+			t.Run("StoreAndLoad", func(t *testing.T) {
+				now1 := time.Now().Truncate(time.Millisecond)
+				now2 := now1.Add(time.Minute)
+				original := states.State{
+					MigrationStatus:    states.MigrationStatusInProgress,
+					MigrationTotal:     json.Number("100"),
+					MigrationOffset:    json.Number("42"),
+					MigrationIssue:     "none",
+					MigrationStartedAt: now1,
+					MigrationStoppedAt: now2,
 
-				ReplicationStatus:      states.ReplicationStatusStreaming,
-				ReplicationIssue:       "replica error",
-				ReplicationStartedAt:   now2,
-				ReplicationStoppededAt: now1,
-			}
+					ReplicationStatus:      states.ReplicationStatusStreaming,
+					ReplicationIssue:       "replica error",
+					ReplicationStartedAt:   now2,
+					ReplicationStoppededAt: now1,
+				}
 
-			if err := st.store.Store(&ctx, "key1", original); err != nil {
-				t.Fatalf("Store returned error: %v", err)
-			}
-			loaded, ok := st.store.Load(&ctx, "key1")
-			if !ok {
-				t.Fatal("expected Load to find key1")
-			}
-			if !statesEqual(original, loaded) {
-				t.Errorf("loaded state mismatch:\nexpected %+v\ngot      %+v", original, loaded)
-			}
+				if err := st.store.Store(&ctx, "key1", original); err != nil {
+					t.Fatalf("Store returned error: %v", err)
+				}
+				loaded, ok := st.store.Load(&ctx, "key1")
+				if !ok {
+					t.Fatal("⛔️ expected Load to find key1")
+				}
+				if !statesEqual(original, loaded) {
+					t.Errorf("❌ loaded state mismatch:\nexpected %+v\ngot      %+v", original, loaded)
+				}
+			})
 
 			// 3) Delete and ensure it’s gone
-			if err := st.store.Delete(&ctx, "key1"); err != nil {
-				t.Errorf("Delete returned error: %v", err)
-			}
-			if _, ok := st.store.Load(&ctx, "key1"); ok {
-				t.Error("expected Load to return ok=false after Delete")
-			}
+			t.Run("DeleteAndCheck", func(t *testing.T) {
+				now1 := time.Now().Truncate(time.Millisecond)
+				now2 := now1.Add(time.Minute)
+				original := states.State{
+					MigrationStatus:    states.MigrationStatusInProgress,
+					MigrationTotal:     json.Number("100"),
+					MigrationOffset:    json.Number("42"),
+					MigrationIssue:     "none",
+					MigrationStartedAt: now1,
+					MigrationStoppedAt: now2,
+
+					ReplicationStatus:      states.ReplicationStatusStreaming,
+					ReplicationIssue:       "replica error",
+					ReplicationStartedAt:   now2,
+					ReplicationStoppededAt: now1,
+				}
+				st.store.Store(&ctx, "key1", original)
+				if err := st.store.Delete(&ctx, "key1"); err != nil {
+					t.Errorf("❌ Delete returned error: %v", err)
+				}
+				if _, ok := st.store.Load(&ctx, "key1"); ok {
+					t.Error("❌ expected Load to return ok=false after Delete")
+				}
+			})
 
 			// 4) Clear should wipe everything
-			st.store.Store(&ctx, "a", original)
-			st.store.Store(&ctx, "b", original)
-			if err := st.store.Clear(&ctx); err != nil {
-				t.Errorf("Clear returned error: %v", err)
-			}
-			if _, ok := st.store.Load(&ctx, "a"); ok {
-				t.Error("expected Load to return ok=false after Clear")
-			}
-			if _, ok := st.store.Load(&ctx, "b"); ok {
-				t.Error("expected Load to return ok=false after Clear")
-			}
+			t.Run("ClearAll", func(t *testing.T) {
+				now1 := time.Now().Truncate(time.Millisecond)
+				now2 := now1.Add(time.Minute)
+				original := states.State{
+					MigrationStatus:    states.MigrationStatusInProgress,
+					MigrationTotal:     json.Number("100"),
+					MigrationOffset:    json.Number("42"),
+					MigrationIssue:     "none",
+					MigrationStartedAt: now1,
+					MigrationStoppedAt: now2,
+
+					ReplicationStatus:      states.ReplicationStatusStreaming,
+					ReplicationIssue:       "replica error",
+					ReplicationStartedAt:   now2,
+					ReplicationStoppededAt: now1,
+				}
+				st.store.Store(&ctx, "a", original)
+				st.store.Store(&ctx, "b", original)
+				if err := st.store.Clear(&ctx); err != nil {
+					t.Errorf("❌ Clear returned error: %v", err)
+				}
+				if _, ok := st.store.Load(&ctx, "a"); ok {
+					t.Error("❌ expected Load to return ok=false after Clear")
+				}
+				if _, ok := st.store.Load(&ctx, "b"); ok {
+					t.Error("❌ expected Load to return ok=false after Clear")
+				}
+			})
 
 			// 5) Close and ensure further ops fail
-			if err := st.store.Close(&ctx); err != nil {
-				t.Errorf("Close returned error: %v", err)
-			}
-			if err := st.store.Store(&ctx, "x", original); err != states.ErrClosed {
-				t.Errorf("expected Store after Close to return states.ErrClosed, got %v", err)
-			}
-			if _, ok := st.store.Load(&ctx, "a"); ok {
-				t.Error("expected Load after Close to return ok=false")
-			}
-			if err := st.store.Delete(&ctx, "b"); err != states.ErrClosed {
-				t.Errorf("expected Delete after Close to return states.ErrClosed, got %v", err)
-			}
-			if err := st.store.Clear(&ctx); err != states.ErrClosed {
-				t.Errorf("expected Clear after Close to return states.ErrClosed, got %v", err)
-			}
+			t.Run("CloseAndCheckOps", func(t *testing.T) {
+				now1 := time.Now().Truncate(time.Millisecond)
+				now2 := now1.Add(time.Minute)
+				original := states.State{
+					MigrationStatus:    states.MigrationStatusInProgress,
+					MigrationTotal:     json.Number("100"),
+					MigrationOffset:    json.Number("42"),
+					MigrationIssue:     "none",
+					MigrationStartedAt: now1,
+					MigrationStoppedAt: now2,
+
+					ReplicationStatus:      states.ReplicationStatusStreaming,
+					ReplicationIssue:       "replica error",
+					ReplicationStartedAt:   now2,
+					ReplicationStoppededAt: now1,
+				}
+				st.store.Store(&ctx, "x", original)
+				if err := st.store.Close(&ctx); err != nil {
+					t.Errorf("❌ Close returned error: %v", err)
+				}
+				if err := st.store.Store(&ctx, "x", original); err != states.ErrClosed {
+					t.Errorf("❌ expected Store after Close to return states.ErrClosed, got %v", err)
+				}
+				if _, ok := st.store.Load(&ctx, "a"); ok {
+					t.Error("❌ expected Load after Close to return ok=false")
+				}
+				if err := st.store.Delete(&ctx, "b"); err != states.ErrClosed {
+					t.Errorf("❌ expected Delete after Close to return states.ErrClosed, got %v", err)
+				}
+				if err := st.store.Clear(&ctx); err != states.ErrClosed {
+					t.Errorf("❌ expected Clear after Close to return states.ErrClosed, got %v", err)
+				}
+			})
 		})
 	}
 }

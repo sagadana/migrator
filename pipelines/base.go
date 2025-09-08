@@ -19,20 +19,20 @@ import (
 
 type PipelineConfig struct {
 	// Number of items to migrate per batch. 0 to disable batching
-	MigrationBatchSize int64
+	MigrationBatchSize uint64
 	// Max amount of items to migrate. 0 to migrate everything
-	MigrationMaxSize int64
+	MigrationMaxSize uint64
 	// Table / Collection offset to start reading from
-	MigrationStartOffset int64
+	MigrationStartOffset uint64
 	// Number of parallel workers used to read from source
 	MigrationParallelWorkers int
 
 	// Enable contiuous replication
 	ContinuousReplication bool
 	// Number of items to accumulate & replicate per batch
-	ReplicationBatchSize int64
+	ReplicationBatchSize uint64
 	// How long to wait for data to be accumulated
-	ReplicationBatchWindowSecs int64
+	ReplicationBatchWindowSecs uint64
 
 	OnMigrationStart    func(state states.State)
 	OnMigrationProgress func(state states.State, count datasources.DatasourcePushCount)
@@ -378,7 +378,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	// Use previous offset for resume from last position
 	previousOffset, _ := state.MigrationOffset.Int64()
-	startOffet := max(previousOffset, config.MigrationStartOffset)
+	startOffet := max(uint64(previousOffset), config.MigrationStartOffset)
 
 	// Get total items
 	total := p.From.Count(ctx, &datasources.DatasourceFetchRequest{
@@ -417,7 +417,7 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 
 	// Track: In Progress
 	state.MigrationStatus = states.MigrationStatusInProgress
-	state.MigrationOffset = json.Number(strconv.FormatInt(startOffet, 10))
+	state.MigrationOffset = json.Number(strconv.FormatUint(startOffet, 10))
 	p.setState(ctx, state)
 
 	slog.Info(fmt.Sprintf("Migration Started. Total: %d, Offset: %d", total, startOffet))
@@ -433,20 +433,24 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 		StartOffset: startOffet,
 	}
 	helpers.ParallelBatch(ctx, &parallel,
-		func(ctx *context.Context, job int, size, offset int64) {
+		func(ctx *context.Context, job int, size, offset uint64) {
 			source := make(chan datasources.DatasourceFetchResult, 1)
+			// slog.Info(fmt.Sprintf("Migration Processing: Size: %d. Offset: %d", size, offset))
 
 			// Read Items
 			go func() {
 				defer close(source)
-				source <- p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
+				result := p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
 					Size:   size,
 					Offset: offset,
 				})
+				// slog.Info(fmt.Sprintf("Migration Fetch:  Size: %d. Offset: %d, Data: %#v", size, offset, result))
+				source <- result
 			}()
 
 			// Parse destination input from source
 			input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
+
 				if data.Err != nil {
 					if config.OnMigrationError != nil {
 						go config.OnMigrationError(state, fmt.Errorf("fetch error (%s): %w", p.ID, data.Err))
@@ -474,8 +478,8 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 						defer config.OnMigrationError(state, result.Err)
 					}
 				} else if result.Count != nil {
-					state.MigrationOffset = json.Number(strconv.FormatInt(previousOffset+result.Count.Inserts, 10))
-					state.MigrationTotal = json.Number(strconv.FormatInt(previousTotal+result.Count.Inserts, 10))
+					state.MigrationOffset = json.Number(strconv.FormatUint(uint64(previousOffset)+result.Count.Inserts, 10))
+					state.MigrationTotal = json.Number(strconv.FormatUint(uint64(previousTotal)+result.Count.Inserts, 10))
 
 					slog.Info(fmt.Sprintf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset))
 					if config.OnMigrationProgress != nil {

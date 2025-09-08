@@ -3,7 +3,6 @@ package datasources
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -97,7 +96,11 @@ func NewMongoDatasource(ctx *context.Context,
 	}
 
 	// Initialize data source
-	ds.Init()
+	if ds.onInit != nil {
+		if err := ds.onInit(ds.client); err != nil {
+			panic(err)
+		}
+	}
 
 	return ds
 }
@@ -106,24 +109,24 @@ func (ds *MongoDatasource) Client() *mongo.Client {
 	return ds.client
 }
 
-// Initialize Data source
-func (ds *MongoDatasource) Init() {
-	if ds.onInit != nil {
-		if err := ds.onInit(ds.client); err != nil {
-			panic(err)
-		}
-	}
-}
-
 // Get total count
-func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) int64 {
+func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
-	var count int64
+	// If IDs filter is provided
+	if c := len(request.IDs); c > 0 {
+		return uint64(c)
+	}
+
 	var err error
+	var count int64
+
+	offset := int64(request.Offset)
+	size := int64(request.Size)
+
 	if ds.accurateCount {
 		filter := new(any)
-		countOption := options.CountOptions{}
+		countOption := options.CountOptions{Skip: &offset, Limit: &size}
 		count, err = collection.CountDocuments(*ctx, filter, &countOption)
 	}
 
@@ -135,16 +138,11 @@ func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchR
 		}
 	}
 
-	offset := int64(0)
-
-	if request.Size > 0 && request.Size < count {
-		count = request.Size
-	}
-	if request.Offset > 0 && request.Offset >= count {
-		offset = 0
+	if size > 0 && size < count {
+		count = size
 	}
 
-	return max(0, count-offset)
+	return uint64(count)
 }
 
 // Get data
@@ -166,10 +164,8 @@ func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 	cursor, err := collection.Find(*ctx, filter, findOptions)
 	if err != nil {
 		return DatasourceFetchResult{
-			Err:   err,
-			Start: int64(request.Offset),
-			End:   int64(request.Offset + request.Size),
-			Docs:  []map[string]any{},
+			Err:  err,
+			Docs: []map[string]any{},
 		}
 	}
 	defer cursor.Close(*ctx)
@@ -190,8 +186,8 @@ func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 		}
 	}
 	return DatasourceFetchResult{
-		Start: int64(request.Offset),
-		End:   int64(request.Offset + request.Size),
+		Start: request.Offset,
+		End:   request.Offset + uint64(max(0, len(docs)-1)),
 		Docs:  docs,
 	}
 }
@@ -238,9 +234,9 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 		if err != nil {
 			return count, fmt.Errorf("mongodb bulk write error: %w", err)
 		}
-		count.Inserts = result.InsertedCount
-		count.Updates = (result.ModifiedCount + result.UpsertedCount)
-		count.Deletes = result.DeletedCount
+		count.Inserts = uint64(result.InsertedCount)
+		count.Updates = uint64(result.ModifiedCount + result.UpsertedCount)
+		count.Deletes = uint64(result.DeletedCount)
 	}
 
 	return count, nil
@@ -249,50 +245,45 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 // Listen to Change Data Streams (CDC) if available
 func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
-	out := make(chan DatasourceStreamResult)
+	watcher := make(chan DatasourcePushRequest)
 
-	batchSize := max(request.BatchSize, 1)
-	batchWindow := max(request.BatchWindowSeconds, 1)
-
-	// Define the Batch event Processing Logic
-	// This is the callback function that handles the collected events.
-	// For this example, it just prints the operation type and document key for each event.
-	processEvents := func(batch []map[string]any) DatasourcePushRequest {
+	// Convert mongo stream event to Datasource Push Request
+	processEvent := func(event map[string]any) DatasourcePushRequest {
 		inserts, updates, deletes := []map[string]any{}, map[string]map[string]any{}, []string{}
-		for _, event := range batch {
-			opType := event["operationType"].(string)
-			switch opType {
-			case "insert":
-				doc, ok := event["fullDocument"].(map[string]any)
-				if !ok {
-					continue
-				}
-				inserts = append(inserts, doc)
+		opType := event["operationType"].(string)
 
-			case "update":
-				docKey, ok := event["documentKey"].(map[string]any)
-				if !ok {
-					continue
-				}
-
-				doc, ok := event["fullDocument"].(map[string]any)
-				if !ok {
-					continue
-				}
-
-				id := docKey[MongoIDField]
-				updates[id.(string)] = doc
-
-			case "delete":
-				docKey, ok := event["documentKey"].(map[string]any)
-				if !ok {
-					continue
-				}
-
-				id := docKey[MongoIDField]
-				deletes = append(deletes, id.(string))
+		switch opType {
+		case "insert":
+			doc, ok := event["fullDocument"].(map[string]any)
+			if !ok {
+				break
 			}
+			inserts = append(inserts, doc)
+
+		case "update":
+			docKey, ok := event["documentKey"].(map[string]any)
+			if !ok {
+				break
+			}
+
+			doc, ok := event["fullDocument"].(map[string]any)
+			if !ok {
+				break
+			}
+
+			id := docKey[MongoIDField]
+			updates[id.(string)] = doc
+
+		case "delete":
+			docKey, ok := event["documentKey"].(map[string]any)
+			if !ok {
+				break
+			}
+
+			id := docKey[MongoIDField]
+			deletes = append(deletes, id.(string))
 		}
+
 		return DatasourcePushRequest{
 			Inserts: inserts,
 			Updates: updates,
@@ -300,8 +291,12 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		}
 	}
 
+	// Process mongo change stream in the background
 	go func(bgCtx context.Context) {
-		defer close(out)
+		defer close(watcher)
+
+		batchSize := max(request.BatchSize, 1)
+		batchWindow := max(request.BatchWindowSeconds, 1)
 
 		// Options for the change stream.
 		// MaxAwaitTime tells the server how long to wait for new data before returning an empty batch.
@@ -329,43 +324,14 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		// Start the change stream
 		stream, err := collection.Watch(bgCtx, pipeline, streamOpts)
 		if err != nil {
-			out <- DatasourceStreamResult{
-				Err:  fmt.Errorf("mongodb watch error: '%s", err.Error()),
-				Docs: DatasourcePushRequest{},
-			}
-			return
+			panic(fmt.Errorf("mongodb watch error: '%s", err.Error()))
 		}
 		defer stream.Close(bgCtx)
 
-		// Ticker to enforce the batch processing time window
-		ticker := time.NewTicker(time.Duration(batchWindow) * time.Second)
-		defer ticker.Stop()
-
-		// Buffer to hold the batch of change events
-		batch := make([]map[string]any, 0, batchSize)
-
-		slog.Info(fmt.Sprintf("Watching collection '%s' for changes...", ds.collectionName))
-		// Use a select statement to handle multiple concurrent events:
-		// 1. A new change event arrives.
-		// 2. The batch time window expires (ticker fires).
-		// 3. The context is cancelled (e.g., application shutdown).
 		for {
 			select {
 			case <-bgCtx.Done():
-				slog.Info("Canceled Mongo Change Stream")
-				// Context has been cancelled. Process any remaining events in the batch before exiting.
-				if len(batch) > 0 {
-					out <- DatasourceStreamResult{Docs: processEvents(batch)}
-				}
 				return
-
-			case <-ticker.C:
-				if len(batch) > 0 {
-					out <- DatasourceStreamResult{
-						Docs: processEvents(batch),
-					}
-					batch = make([]map[string]any, 0, batchSize)
-				}
 
 			default:
 				var event map[string]any
@@ -375,23 +341,19 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 				cancel()
 				if hasNext {
 					if err := stream.Decode(&event); err == nil {
-						batch = append(batch, event)
-					}
-
-					// Send if batch size reached
-					if len(batch) >= int(batchSize) {
-						out <- DatasourceStreamResult{
-							Docs: processEvents(batch),
-						}
-						batch = make([]map[string]any, 0, batchSize)
-						ticker.Reset(time.Duration(batchWindow) * time.Second)
+						watcher <- processEvent(event)
 					}
 				}
 			}
 		}
 	}(*ctx)
 
-	return out
+	return StreamChanges(
+		ctx,
+		fmt.Sprintf("mongo datastore collection '%s'", ds.collectionName),
+		watcher,
+		request,
+	)
 }
 
 // Clear data source

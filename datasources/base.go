@@ -2,6 +2,10 @@ package datasources
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"maps"
+	"time"
 
 	"github.com/sagadana/migrator/helpers"
 )
@@ -12,31 +16,34 @@ type DatasourcePushRequest struct {
 	Deletes []string
 }
 type DatasourcePushCount struct {
-	Inserts int64
-	Updates int64
-	Deletes int64
+	Inserts uint64
+	Updates uint64
+	Deletes uint64
 }
 
 type DatasourceFetchRequest struct {
 	// List of IDs to fetch (optional)
 	IDs []string
 	// Number of items to fetch. 0 to fetch all (optional)
-	Size int64
+	Size uint64
 	// Offset to start fetching from. 0 to start from beginning (optional)
-	Offset int64
+	Offset uint64
 }
+
 type DatasourceStreamRequest struct {
 	// TODO: Add support for StartFromTimestamp
 	// Number of items to batch. 0 to disable batching (optional)
-	BatchSize int64
+	BatchSize uint64
 	// How long to wait to accumulate batch (optional)
-	BatchWindowSeconds int64
+	BatchWindowSeconds uint64
 }
 type DatasourceFetchResult struct {
-	Err   error
-	Docs  []map[string]any
-	Start int64
-	End   int64
+	Err  error
+	Docs []map[string]any
+	// Start offset: where first offset = 0
+	Start uint64
+	// End offset: where first offset = 0
+	End uint64
 }
 type DatasourceStreamResult struct {
 	Err  error
@@ -45,10 +52,9 @@ type DatasourceStreamResult struct {
 type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
-	// Initialize data source
-	Init()
-	// Get total count
-	Count(ctx *context.Context, request *DatasourceFetchRequest) int64
+	// Get total count of items based on the provided request.
+	// Note: The count should reflect the givein 'Size' and number of 'IDs'
+	Count(ctx *context.Context, request *DatasourceFetchRequest) uint64
 	// Fetch data
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
 	// Insert/Update/Delete data
@@ -60,8 +66,11 @@ type Datasource interface {
 }
 
 // Load CSV data into datasource
-func LoadCSV(ctx *context.Context,
-	ds Datasource, path string, batchSize int64,
+func LoadCSV(
+	ctx *context.Context,
+	ds Datasource,
+	path string,
+	batchSize uint64,
 	// Nullable transformer
 	transformer DatasourceTransformer,
 ) error {
@@ -89,4 +98,96 @@ func LoadCSV(ctx *context.Context,
 	}
 
 	return nil
+}
+
+// Process datasource change stream with additional features suceh as batching
+func StreamChanges(
+	ctx *context.Context,
+	title string,
+	watcher <-chan DatasourcePushRequest,
+	request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
+
+	out := make(chan DatasourceStreamResult)
+
+	go func(bgCtx context.Context) {
+		defer close(out)
+
+		batchSize := max(request.BatchSize, 1)
+		batchWindow := max(request.BatchWindowSeconds, 1)
+
+		ticker := time.NewTicker(time.Duration(batchWindow) * time.Second)
+		defer ticker.Stop()
+
+		batch := DatasourcePushRequest{
+			Inserts: make([]map[string]any, 0),
+			Updates: make(map[string]map[string]any),
+			Deletes: make([]string, 0),
+		}
+
+		slog.Info(fmt.Sprintf("Watching %s for changes...", title))
+
+		for {
+			select {
+			case <-bgCtx.Done():
+				slog.Info(fmt.Sprintf("Closing %s watcher...", title))
+
+				// Watcher closed - Drain channel
+				for {
+					select {
+					case event := <-watcher:
+						// Drain
+						batch.Inserts = append(batch.Inserts, event.Inserts...)
+						maps.Copy(batch.Updates, event.Updates)
+						batch.Deletes = append(batch.Deletes, event.Deletes...)
+					default:
+						// Channel is empty - stop draining
+						// Send remaining batch
+						if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
+							out <- DatasourceStreamResult{Docs: batch}
+							batch = *new(DatasourcePushRequest) // clean up batch
+						}
+						return
+					}
+				}
+
+			case <-ticker.C:
+				// Time elapsed - send batch
+				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
+					out <- DatasourceStreamResult{Docs: batch}
+					// Reset batch
+					batch = DatasourcePushRequest{
+						Inserts: make([]map[string]any, 0),
+						Updates: make(map[string]map[string]any),
+						Deletes: make([]string, 0),
+					}
+				}
+
+			case event, ok := <-watcher:
+				if !ok {
+					return
+				}
+
+				// Append items to batch
+				batch.Inserts = append(batch.Inserts, event.Inserts...)
+				maps.Copy(batch.Updates, event.Updates)
+				batch.Deletes = append(batch.Deletes, event.Deletes...)
+
+				// Batch full - send batch
+				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) >= int(batchSize) {
+					out <- DatasourceStreamResult{Docs: batch}
+					// Reset batch
+					batch = DatasourcePushRequest{
+						Inserts: make([]map[string]any, 0),
+						Updates: make(map[string]map[string]any),
+						Deletes: make([]string, 0),
+					}
+					// Reset timer
+					ticker.Reset(time.Duration(batchWindow) * time.Second)
+				}
+			}
+		}
+
+	}(*ctx)
+
+	return out
 }

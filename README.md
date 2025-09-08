@@ -14,7 +14,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 | Datasource | Status  | Read(R) / Write(W) | Continuous Replication                  |
 | ---------- | ------- | ------------------ | --------------------------------------- |
-| `File`     | Done    | R/W                | Yes                                     |
+| `Memory`   | Done    | R/W                | Yes                                     |
 | `MongoDB`  | Done    | R/W                | Yes (_with replica set / cluster mode_) |
 | `Redis`    | WIP     | TBC                | TBC                                     |
 | `Postgres` | Planned | TBC                | TBC                                     |
@@ -43,9 +43,9 @@ _Used for storing replication states_
 package main
 
 import (
-	"github.com/sagadana/migrator/datasources"
-	"github.com/sagadana/migrator/pipelines"
-	"github.com/sagadana/migrator/states"
+ "github.com/sagadana/migrator/datasources"
+ "github.com/sagadana/migrator/pipelines"
+ "github.com/sagadana/migrator/states"
 )
 
 func main() {
@@ -151,6 +151,12 @@ func main() {
 ```
 
 ## Test
+
+### Test States
+
+```sh
+docker compose --env-file ./tests/.env.dev  up tester-state
+```
 
 ### Test Datasources
 
