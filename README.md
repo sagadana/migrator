@@ -10,6 +10,12 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 - Parallel Procesing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
 
+## Terms
+
+**State Store**: Used for storing migration & replication states
+**Datasource**: Connector to data origin. E.g Database, File, Bucket
+**Pipeline**: Migration or Replication integration to transfer data from one datasource to another
+
 ## Datasources
 
 | Datasource | Status  | Read(R) / Write(W) | Continuous Replication                  |
@@ -22,7 +28,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## State Stores
 
-_Used for storing replication states_
+Used for storing replication states
 
 | Datasource | Status |
 | ---------- | ------ |
@@ -33,7 +39,9 @@ _Used for storing replication states_
 
 ## Install
 
-`go get github.com/sagadana/migrator/datasources`
+```bash
+go get github.com/sagadana/migrator
+```
 
 ## Usage
 
@@ -169,3 +177,7 @@ docker compose --env-file ./tests/.env.dev  up tester-ds
 ```sh
 docker compose --env-file ./tests/.env.dev  up tester-pipe
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md)

@@ -46,30 +46,30 @@ func (m *MemoryDatasource) getId(data map[string]any) (val string, err error) {
 	}
 	return val, fmt.Errorf("missing '%s' in insert document", m.idField)
 }
-func (m *MemoryDatasource) Count(_ *context.Context, req *DatasourceFetchRequest) uint64 {
+func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) uint64 {
 	// 1. Determine the raw “total” matching items
 	var total uint64
-	if len(req.IDs) > 0 {
-		// only count IDs that actually exist
-		for _, id := range req.IDs {
+	if len(request.IDs) > 0 {
+		// Only count IDs that actually exist
+		for _, id := range request.IDs {
 			if _, ok := m.data.Load(id); ok {
 				total++
 			}
 		}
 	} else {
-		// no IDs filter → all stored IDs
+		// No IDs filter → all stored IDs
 		total = uint64(len(m.ids))
 	}
 
 	// 2. Apply offset: if we skip past the end, zero left
-	if req.Offset >= total {
+	if request.Offset >= total {
 		return 0
 	}
-	remaining := total - req.Offset
+	remaining := total - request.Offset
 
 	// 3. Apply size cap: if Size>0 and smaller than what's left, cap it
-	if req.Size > 0 && req.Size < remaining {
-		return req.Size
+	if request.Size > 0 && request.Size < remaining {
+		return request.Size
 	}
 
 	// 4. Otherwise, everything remaining counts

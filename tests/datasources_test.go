@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type TestDatasource struct {
@@ -28,18 +29,18 @@ const (
 // Utils
 // --------
 
-// Get base path for temp dir
-func getDatasourcesTempBasePath() string {
-	return helpers.GetTempBasePath("test-datasources")
-}
-
 // Retrieve Test Datasources
 // TODO: Add more datasources here to test...
-func getTestDatasources(_ *context.Context, basePath string) <-chan TestDatasource {
+func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestDatasource {
 	out := make(chan TestDatasource)
 
 	// Reusable vars
 	var id string
+
+	// Create datasource name
+	getDsName := func(id string) string {
+		return fmt.Sprintf("%s-%s", id, instanceId)
+	}
 
 	go func() {
 		defer close(out)
@@ -50,7 +51,37 @@ func getTestDatasources(_ *context.Context, basePath string) <-chan TestDatasour
 		id = "memory-datasource"
 		out <- TestDatasource{
 			id:     id,
-			source: datasources.NewMemoryDatasource("test-"+id, TestIDField),
+			source: datasources.NewMemoryDatasource(getDsName(id), TestIDField),
+		}
+
+		// -----------------------
+		// 2. Mongo
+		// -----------------------
+
+		mongoURI := os.Getenv("MONGO_URI")
+		mongoDB := os.Getenv("MONGO_DB")
+
+		id = "mongo-datasource"
+		out <- TestDatasource{
+			id: id,
+			source: datasources.NewMongoDatasource(
+				ctx,
+				datasources.MongoDatasourceConfigs{
+					URI:            mongoURI,
+					DatabaseName:   mongoDB,
+					CollectionName: getDsName(id),
+					Filter:         map[string]any{},
+					Sort:           map[string]any{},
+					AccurateCount:  true,
+					WithTransformer: func(data map[string]any) (map[string]any, error) {
+						data[datasources.MongoIDField] = data[TestIDField]
+						return data, nil
+					},
+					OnInit: func(client *mongo.Client) error {
+						return nil
+					},
+				},
+			),
 		}
 
 	}()
@@ -70,10 +101,9 @@ func TestDatasourceImplementations(t *testing.T) {
 	}()
 	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
 
-	basePath := getDatasourcesTempBasePath()
-	os.RemoveAll(basePath) // Clean test path
+	instanceId := helpers.RandomString(6)
 
-	for td := range getTestDatasources(&ctx, basePath) {
+	for td := range getTestDatasources(&ctx, instanceId) {
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")

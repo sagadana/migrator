@@ -435,8 +435,6 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 	helpers.ParallelBatch(ctx, &parallel,
 		func(ctx *context.Context, job int, size, offset uint64) {
 			source := make(chan datasources.DatasourceFetchResult, 1)
-			// slog.Info(fmt.Sprintf("Migration Processing: Size: %d. Offset: %d", size, offset))
-
 			// Read Items
 			go func() {
 				defer close(source)
@@ -444,7 +442,6 @@ func (p *Pipeline) Start(ctx *context.Context, config PipelineConfig) error {
 					Size:   size,
 					Offset: offset,
 				})
-				// slog.Info(fmt.Sprintf("Migration Fetch:  Size: %d. Offset: %d, Data: %#v", size, offset, result))
 				source <- result
 			}()
 

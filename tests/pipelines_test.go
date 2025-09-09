@@ -13,6 +13,7 @@ import (
 	"github.com/sagadana/migrator/helpers"
 	"github.com/sagadana/migrator/pipelines"
 	"github.com/sagadana/migrator/states"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const IDField = "Index"
@@ -105,7 +106,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		toDs.Clear(ctx)
 
 		// Load sample data into source
-		err := datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10, nil)
+		err := datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10)
 		if err != nil {
 			panic(fmt.Errorf("failed to load data from CSV to file 'fromDs': %s", err))
 		}
@@ -120,84 +121,84 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		// 2. Mongo
 		// -----------------------
 
-		// mongoURI := os.Getenv("MONGO_URI")
-		// mongoDB := os.Getenv("MONGO_DB")
+		mongoURI := os.Getenv("MONGO_URI")
+		mongoDB := os.Getenv("MONGO_DB")
+		mongoTransformer := func(data map[string]any) (map[string]any, error) {
+			// Use to transform to include default mongo ID
+			data[datasources.MongoIDField] = data[IDField]
+			return data, nil
+		}
 
-		// id = "test-file-to-mongo-pipeline"
-		// fromDs = datasources.NewFileDatasource(basePath, getDsName(id, "source"), IDField)
-		// toDs = datasources.NewMongoDatasource(
-		// 	ctx,
-		// 	datasources.MongoDatasourceConfigs{
-		// 		URI:            mongoURI,
-		// 		DatabaseName:   mongoDB,
-		// 		CollectionName: getDsName(id, "destination"),
-		// 		Filter:         map[string]any{},
-		// 		Sort:           map[string]any{},
-		// 		AccurateCount:  true,
-		// 		OnInit: func(client *mongo.Client) error {
-		// 			return nil
-		// 		},
-		// 	},
-		// )
-		// fromDs.Clear(ctx)
-		// toDs.Clear(ctx)
+		id = "test-mem-to-mongo-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewMongoDatasource(
+			ctx,
+			datasources.MongoDatasourceConfigs{
+				URI:            mongoURI,
+				DatabaseName:   mongoDB,
+				CollectionName: getDsName(id, "destination"),
+				Filter:         map[string]any{},
+				Sort:           map[string]any{},
+				AccurateCount:  true,
+				OnInit: func(client *mongo.Client) error {
+					return nil
+				},
+			},
+		)
+		fromDs.Clear(ctx)
+		toDs.Clear(ctx)
 
-		// // Use to transform to include default mongo ID
-		// mongoTransformer := func(data map[string]any) (map[string]any, error) {
-		// 	data[datasources.MongoIDField] = data[IDField]
-		// 	return data, nil
-		// }
+		// --------------- 2.1. Memory to Mongo --------------- //
 
-		// // --------------- 2.1. File to Mongo --------------- //
+		// Load sample data into source
+		err = datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10)
+		if err != nil {
+			panic(fmt.Errorf("failed to load data from CSV to file 'fromDs': %s", err))
+		}
 
-		// // Load sample data into source
-		// err = datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10, nil)
-		// if err != nil {
-		// 	panic(fmt.Errorf("failed to load data from CSV to file 'fromDs': %s", err))
-		// }
+		// Send test job
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+			transform:   mongoTransformer,
+		}
 
-		// // Send test job
-		// out <- TestPipeline{
-		// 	id:          id,
-		// 	source:      fromDs,
-		// 	destination: toDs,
-		// 	transform:    mongoTransformer,
-		// }
+		// --------------- 2.2. Mongo to Memory --------------- //
 
-		// // --------------- 2.2. Mongo to File --------------- //
+		id = "test-mongo-to-mem-pipeline"
+		fromDs = datasources.NewMongoDatasource(
+			ctx,
+			datasources.MongoDatasourceConfigs{
+				URI:             mongoURI,
+				DatabaseName:    mongoDB,
+				CollectionName:  getDsName(id, "source"),
+				Filter:          map[string]any{},
+				Sort:            map[string]any{},
+				AccurateCount:   true,
+				WithTransformer: mongoTransformer, // Use transformer when loading into source
+				OnInit: func(client *mongo.Client) error {
+					return nil
+				},
+			},
+		)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
+		fromDs.Clear(ctx)
+		toDs.Clear(ctx)
 
-		// id = "test-mongo-to-file-pipeline"
-		// fromDs = datasources.NewMongoDatasource(
-		// 	ctx,
-		// 	datasources.MongoDatasourceConfigs{
-		// 		URI:            mongoURI,
-		// 		DatabaseName:   mongoDB,
-		// 		CollectionName: getDsName(id, "source"),
-		// 		Filter:         map[string]any{},
-		// 		Sort:           map[string]any{},
-		// 		AccurateCount:  true,
-		// 		OnInit: func(client *mongo.Client) error {
-		// 			return nil
-		// 		},
-		// 	},
-		// )
-		// toDs = datasources.NewFileDatasource(basePath, getDsName(id, "destination"), IDField)
-		// fromDs.Clear(ctx)
-		// toDs.Clear(ctx)
-
-		// // Load sample data into source
-		// err = datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10, mongoTransformer)
-		// if err != nil {
-		// 	panic(fmt.Errorf("failed to load data from CSV to 'fromMongoDs': %s", err))
-		// }
+		// Load sample data into source
+		err = datasources.LoadCSV(ctx, fromDs, TestDatasetPath, 10)
+		if err != nil {
+			panic(fmt.Errorf("failed to load data from CSV to 'fromMongoDs': %s", err))
+		}
 
 		// Send test job // TODO: Fix
-		// out <- TestPipeline{
-		// 	id:          id,
-		// 	source:      fromDs,
-		// 	destination: toDs,
-		// 	transform:    mongoTransformer,
-		// }
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+			transform:   mongoTransformer,
+		}
 	}()
 
 	return out
@@ -497,7 +498,6 @@ func TestPipelineImplementations(t *testing.T) {
 	instanceId := helpers.RandomString(6)
 
 	for tp := range getTestPipelines(&ctx, instanceId) {
-		// t.Parallel() // TODO: Try enable
 
 		t.Run(tp.id, func(t *testing.T) {
 

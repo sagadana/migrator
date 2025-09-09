@@ -40,38 +40,39 @@ func ParallelBatch(
 	fn func(ctx *context.Context, job int, size, offset uint64),
 ) {
 
+	// Normalize Units
 	units := config.Units
-	total := config.Total
-	batchSize := min(config.BatchSize, total)
-	startOffset := config.StartOffset
-
 	if units <= 0 {
 		units = 1
 	}
-	if batchSize <= 0 {
+
+	// Normalize BatchSize
+	batchSize := config.BatchSize
+	if batchSize == 0 {
 		batchSize = 1
 	}
 
-	// Calculate chunk size
-	chunks := uint64(units)
-	chunkSize := max(1, uint64((float64(total / chunks))))
-	if total%chunks > 0 {
-		chunks++
+	total := config.Total
+	start := config.StartOffset
+
+	// No work if total is zero
+	if total == 0 {
+		return
 	}
 
-	// Calculate bach size per chunk
-	batchSize = min(batchSize, chunkSize)
-	batches := total / batchSize
-	batchSizeLeft := total % batchSize
-	if batchSizeLeft > 0 {
+	// Compute how many batches we need
+	fullBatches := total / batchSize
+	remainder := total % batchSize
+	batches := fullBatches
+	if remainder > 0 {
 		batches++
 	}
 
-	// Create parallel job channels
+	// Buffered channel holds all jobs
 	jobs := make(chan ChunkJob, batches)
-	wg := new(sync.WaitGroup)
+	var wg sync.WaitGroup
 
-	// Create parallel workers
+	// Spawn workers
 	for range units {
 		wg.Add(1)
 		go func() {
@@ -82,27 +83,22 @@ func ParallelBatch(
 		}()
 	}
 
-	// Send jobs to workers
-	log.Printf(
-		"Parallel Batch Started: Workers: %d, Offset: %d, Total: %d, Batches: %d, Batch Size: %d, Batch Size Left: %d\n",
-		units, startOffset, total, batches, batchSize, batchSizeLeft,
-	)
-
+	// Enqueue jobs
 	for i := uint64(0); i < batches; i++ {
 		size := batchSize
-		if i == batches-1 && batchSizeLeft > 0 {
-			size = batchSizeLeft
+		if i == batches-1 && remainder > 0 {
+			size = remainder
 		}
-
+		offset := start + (batchSize * i)
 		jobs <- ChunkJob{
 			ID:     int(i),
-			Offset: startOffset + (batchSize * i),
+			Offset: offset,
 			Size:   size,
 		}
 	}
-	close(jobs) // Close job channel - no more jobs to be submitted
+	close(jobs)
 
-	// Waits for workers to complete
+	// Wait for all workers to finish
 	wg.Wait()
 }
 

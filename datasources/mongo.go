@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -26,6 +27,8 @@ type MongoDatasourceConfigs struct {
 
 	// Provide custom mongo client
 	WithClient func(ctx *context.Context, uri string) (*mongo.Client, error)
+	// Provide custom transformer. E.g To convert item's ID to mongo ID
+	WithTransformer DatasourceTransformer
 	// Perform actions on init
 	OnInit func(client *mongo.Client) error
 }
@@ -39,7 +42,8 @@ type MongoDatasource struct {
 	// Use accurate counting instead of estimated count (slower)
 	accurateCount bool
 
-	onInit func(client *mongo.Client) error
+	trasformer DatasourceTransformer
+	onInit     func(client *mongo.Client) error
 }
 
 // Connect to MongoDB
@@ -92,7 +96,9 @@ func NewMongoDatasource(ctx *context.Context,
 		filter:         config.Filter,
 		sort:           mongoSort,
 		accurateCount:  config.AccurateCount,
-		onInit:         config.OnInit,
+
+		trasformer: config.WithTransformer,
+		onInit:     config.OnInit,
 	}
 
 	// Initialize data source
@@ -113,43 +119,58 @@ func (ds *MongoDatasource) Client() *mongo.Client {
 func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
+	// 1. Determine the raw “total” matching items
+	var total uint64
 	// If IDs filter is provided
-	if c := len(request.IDs); c > 0 {
-		return uint64(c)
-	}
-
-	var err error
-	var count int64
-
-	offset := int64(request.Offset)
-	size := int64(request.Size)
-
 	if ds.accurateCount {
-		filter := new(any)
-		countOption := options.CountOptions{Skip: &offset, Limit: &size}
-		count, err = collection.CountDocuments(*ctx, filter, &countOption)
+		filter := bson.M{}
+		if len(ds.filter) > 0 {
+			maps.Copy(filter, ds.filter)
+		}
+		if len(request.IDs) > 0 {
+			filter[MongoIDField] = bson.M{"$in": request.IDs}
+		}
+		count, err := collection.CountDocuments(*ctx, filter)
+		if err == nil {
+			total = uint64(count)
+		}
 	}
-
-	if !ds.accurateCount || err != nil {
-		countOption := options.EstimatedDocumentCountOptions{}
-		count, err = collection.EstimatedDocumentCount(*ctx, &countOption)
-		if err != nil || count == 0 {
-			return 0
+	if !ds.accurateCount {
+		if c := len(request.IDs); c > 0 {
+			total = uint64(c)
+		} else {
+			countOption := options.EstimatedDocumentCountOptions{}
+			count, err := collection.EstimatedDocumentCount(*ctx, &countOption)
+			if err != nil || count == 0 {
+				return 0
+			}
+			total = uint64(count)
 		}
 	}
 
-	if size > 0 && size < count {
-		count = size
+	// 2. Apply offset: if we skip past the end, zero left
+	if request.Offset >= total {
+		return 0
+	}
+	remaining := total - request.Offset
+
+	// 3. Apply size cap: if Size>0 and smaller than what's left, cap it
+	if request.Size > 0 && request.Size < remaining {
+		return request.Size
 	}
 
-	return uint64(count)
+	// 4. Otherwise, everything remaining counts
+	return remaining
 }
 
 // Get data
 func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
-	filter := ds.filter
+	filter := bson.M{}
+	if len(ds.filter) > 0 {
+		maps.Copy(filter, ds.filter)
+	}
 
 	findOptions := options.Find()
 	findOptions.SetSort(ds.sort)
@@ -180,14 +201,17 @@ func (ds *MongoDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 		docs = append(docs, doc)
 	}
 
-	if len(request.IDs) > 0 {
-		return DatasourceFetchResult{
-			Docs: docs,
-		}
+	count := len(docs)
+	start := request.Offset
+	end := request.Offset + uint64(max(0, count-1))
+
+	if count == 0 {
+		start, end = 0, 0
 	}
+
 	return DatasourceFetchResult{
-		Start: request.Offset,
-		End:   request.Offset + uint64(max(0, len(docs)-1)),
+		Start: start,
+		End:   end,
 		Docs:  docs,
 	}
 }
@@ -202,6 +226,14 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	// Insert
 	if len(request.Inserts) > 0 {
 		for _, item := range request.Inserts {
+			// Transform
+			if ds.trasformer != nil {
+				trans, err := ds.trasformer(item)
+				if err == nil {
+					item = trans
+				}
+			}
+
 			docs = append(docs, mongo.NewInsertOneModel().SetDocument(item))
 		}
 	}
@@ -209,7 +241,17 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	// Update
 	if len(request.Updates) > 0 {
 		for key, item := range request.Updates {
-			delete(item, MongoIDField) // Remove mongo ID from update payload - prevent errors
+			// Transform
+			if ds.trasformer != nil {
+				trans, err := ds.trasformer(item)
+				if err == nil {
+					item = trans
+				}
+			}
+
+			// Remove mongo ID from update payload - prevent errors
+			delete(item, MongoIDField)
+
 			docs = append(docs,
 				mongo.NewUpdateOneModel().
 					SetFilter(bson.M{MongoIDField: key}).
@@ -335,10 +377,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 
 			default:
 				var event map[string]any
-				// Use a short-lived context for TryNext to avoid blocking
-				tryCtx, cancel := context.WithTimeout(bgCtx, 100*time.Millisecond)
-				hasNext := stream.TryNext(tryCtx)
-				cancel()
+				hasNext := stream.Next(*ctx)
 				if hasNext {
 					if err := stream.Decode(&event); err == nil {
 						watcher <- processEvent(event)

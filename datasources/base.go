@@ -71,8 +71,6 @@ func LoadCSV(
 	ds Datasource,
 	path string,
 	batchSize uint64,
-	// Nullable transformer
-	transformer DatasourceTransformer,
 ) error {
 	result, err := helpers.StreamCSV(path, batchSize)
 	if err != nil {
@@ -80,15 +78,6 @@ func LoadCSV(
 	}
 
 	for data := range result {
-		if transformer != nil {
-			var err error
-			for i, item := range data {
-				item, err = transformer(item)
-				if err != nil {
-					data[i] = item
-				}
-			}
-		}
 		_, err = ds.Push(ctx, &DatasourcePushRequest{
 			Inserts: data,
 		})
