@@ -3,14 +3,58 @@ name: test
 on: [workflow_call] # allow this workflow to be called from other workflows
 
 jobs:
-  run:
+  helper:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Build docker image
-        run: docker build -f ./Dockerfile -t local .
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-helper"
+          services: "tester-helper"
 
-      - name: Run tests
-        run: docker run -i -w/usr/src/app -v $PWD:/usr/src/app local go test -v -o /usr/src/app/app.test
+  states:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-state"
+          services: "tester-state"
+
+  datasources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-ds"
+          services: "tester-ds"
+
+  pipelines:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run docker compose
+        uses: hoverkraft-tech/compose-action@v2.0.1
+        with:
+          compose-file: ./docker-compose.yml
+          compose-flags: "--env-file ./tests/.env.dev"
+          up-flags: "--exit-code-from tester-pipe"
+          services: "tester-pipe"

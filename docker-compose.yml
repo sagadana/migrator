@@ -1,7 +1,180 @@
 services:
-  tester:
+  # ---------------------
+  # Test
+  # ---------------------
+  tester-helper:
     build:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -o /usr/src/app/app.test
+    command: go test -v /usr/src/app/tests/helpers_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+
+  tester-state:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v /usr/src/app/tests/states_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  tester-ds:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v /usr/src/app/tests/datasources_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-a:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+
+  tester-pipe:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v /usr/src/app/tests/pipelines_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo-a:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+
+  # ---------------------
+  # Redis
+  # ---------------------
+
+  redis:
+    image: "redis:latest"
+    restart: always
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
+    environment:
+      - REDIS_REPLICATION_MODE=master
+      - REDIS_PASSWORD=''
+    networks:
+      - dev-network
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # -----------------------------------
+  # MongoDB (replica set)
+  # -----------------------------------
+
+  # MongoDb Primary Replica
+  mongo-a:
+    image: "mongo:latest"
+    restart: always
+    expose:
+      - 27017
+    ports:
+      - ${MONGO_PORT}:27017
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_INITDB_DATABASE=${MONGO_DB}
+      - MONGO_REPLICA_SET_NAME=${MONGO_RS}
+    networks:
+      - dev-network
+    volumes:
+      - ./tests/mongo/replica.key:/data/replica.key
+    healthcheck:
+      test: >
+        mongosh --host localhost --quiet --eval 
+        "try { rs.status().ok } catch (e) { 0 }"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    entrypoint:
+      - bash
+      - -c
+      - |
+        chmod 400 /data/replica.key
+        chown 999 /data/replica.key
+        exec docker-entrypoint.sh $$@
+    command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
+  mongo-b:
+    image: "mongo:latest"
+    restart: always
+    expose:
+      - 27017
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_INITDB_DATABASE=${MONGO_DB}
+      - MONGO_REPLICA_SET_NAME=${MONGO_RS}
+    networks:
+      - dev-network
+    volumes:
+      - ./tests/mongo/replica.key:/data/replica.key
+    healthcheck:
+      test: >
+        mongosh --host localhost --quiet --eval 
+        "try { rs.status().ok } catch (e) { 0 }"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    entrypoint:
+      - bash
+      - -c
+      - |
+        chmod 400 /data/replica.key
+        chown 999 /data/replica.key
+        exec docker-entrypoint.sh $$@
+    command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
+  # MongoDb Replica-Set Initializer
+  mongo-init:
+    image: "mongo:latest"
+    restart: "no"
+    depends_on:
+      - mongo-a
+      - mongo-b
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_HOST_1=${MONGO_PRIMARY_HOST}
+      - MONGO_HOST_2=${MONGO_REPLICA_1}
+      - MONGO_PORT=${MONGO_PORT}
+      - MONGO_RS=${MONGO_RS}
+    volumes:
+      - ./tests/mongo/replica-init.sh:/scripts/replica-init.sh
+    networks:
+      - dev-network
+    entrypoint:
+      - bash
+      - -c
+      - |
+        chmod +x /scripts/replica-init.sh
+        exec /scripts/replica-init.sh $$@
+
+networks:
+  dev-network:
+    driver: bridge
