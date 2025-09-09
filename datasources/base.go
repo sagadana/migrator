@@ -53,7 +53,7 @@ type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
 	// Get total count of items based on the provided request.
-	// Note: The count should reflect the givein 'Size' and number of 'IDs'
+	// Note: The count should reflect the given 'Size' and number of 'IDs'
 	Count(ctx *context.Context, request *DatasourceFetchRequest) uint64
 	// Fetch data
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
@@ -89,7 +89,7 @@ func LoadCSV(
 	return nil
 }
 
-// Process datasource change stream with additional features suceh as batching
+// Process datasource change stream with additional features such as batching
 func StreamChanges(
 	ctx *context.Context,
 	title string,

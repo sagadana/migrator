@@ -67,7 +67,7 @@ git checkout -b [feat/fix]/your-feature-name
 ### Write Clean Code
 
 - Follow Go's coding conventions.
-- Run `go fmt` to format your code.
+- Run `go fmt ./...` to format your code.
 
 ### Add Tests
 

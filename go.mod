@@ -9,11 +9,9 @@ require go.mongodb.org/mongo-driver v1.17.4
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	golang.org/x/sys v0.32.0 // indirect
 )
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect

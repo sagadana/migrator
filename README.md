@@ -10,11 +10,11 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 - Parallel Procesing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
 
-## Terms
+## Terminologies
 
-**State Store**: Used for storing migration & replication states
-**Datasource**: Connector to data origin. E.g Database, File, Bucket
-**Pipeline**: Migration or Replication integration to transfer data from one datasource to another
+- **State Store**: Used for storing migration & replication states
+- **Datasource**: Connector to data origin. E.g Database, File, Bucket
+- **Pipeline**: Migration or Replication integration to transfer data from one datasource to another
 
 ## Datasources
 
@@ -27,8 +27,6 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 | `<More>`   | Soon    | TBC                | TBC                                     |
 
 ## State Stores
-
-Used for storing replication states
 
 | Datasource | Status |
 | ---------- | ------ |
@@ -64,7 +62,7 @@ func main() {
     // Create the `From` datasource _(File Data Source in this example)_
     fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
     // Load data from a CSV if needed
-    err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv", /*batch size*/ 10)
+    err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
     if err != nil {
         panic(err)
     }
