@@ -2,9 +2,14 @@ package helpers
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"log"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,100 +17,89 @@ import (
 )
 
 type ParallelConfig struct {
-	Units       int
-	Total       int64
-	BatchSize   int64
-	StartOffset int64
+	// Number of parallel workers
+	Units int
+	// Total items
+	Total uint64
+	// Number of items to process per batch
+	BatchSize uint64
+	// What position to start processing from
+	StartOffset uint64
 }
 
-// Process batch reads in parallel
-func ParallelRead[T any](
+type ChunkJob struct {
+	ID     int
+	Offset uint64
+	Size   uint64
+}
+
+// Process batch items in parallel
+func ParallelBatch(
 	ctx *context.Context,
 	config *ParallelConfig,
-	fn func(ctx *context.Context, job int, size int64, offset int64) T,
-) <-chan T {
+	fn func(ctx *context.Context, job int, size, offset uint64),
+) {
 
+	// Normalize Units
 	units := config.Units
-	total := config.Total
-	batchSize := min(config.BatchSize, total)
-	startOffset := config.StartOffset
-
 	if units <= 0 {
 		units = 1
 	}
-	if batchSize <= 0 {
+
+	// Normalize BatchSize
+	batchSize := config.BatchSize
+	if batchSize == 0 {
 		batchSize = 1
 	}
 
-	// Calculate chunk size
-	chunks := units
-	chunkSize := max(1, int64((float64(total / int64(chunks)))))
-	chunkSizeLeft := total % int64(chunks)
-	if chunkSizeLeft > 0 {
-		chunks++
+	total := config.Total
+	start := config.StartOffset
+
+	// No work if total is zero
+	if total == 0 {
+		return
 	}
 
-	// Calculate number of batches per chunk
-	batchSize = min(batchSize, chunkSize)
-	chunkBatches := int64(chunkSize / batchSize)
-	if chunkSize%batchSize > 0 {
-		chunkBatches++
-	}
-
-	// Calculate total number of batches
-	batches := int64(total / batchSize)
-	if total%batchSize > 0 {
+	// Compute how many batches we need
+	fullBatches := total / batchSize
+	remainder := total % batchSize
+	batches := fullBatches
+	if remainder > 0 {
 		batches++
 	}
 
-	// Create parallel job channels
-	jobs := make(chan int)
-	out := make(chan T)
-	wg := new(sync.WaitGroup)
+	// Buffered channel holds all jobs
+	jobs := make(chan ChunkJob, batches)
+	var wg sync.WaitGroup
 
-	// Create parallel workers
-	for range chunks {
+	// Spawn workers
+	for range units {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
-
-			job := <-jobs
-
-			// Load chunk batches
-			for b := range chunkBatches {
-
-				chunkBatchSize := batchSize
-
-				// Last chunk & Last batch - process leftovers
-				if job == chunks-1 && b == chunkBatches-1 && chunkSizeLeft > 0 {
-					chunkBatchSize = chunkSizeLeft
-				}
-
-				offset := int64(startOffset + (b * (chunkBatchSize)) + (int64(job) * chunkSize))
-				out <- fn(ctx, job, chunkBatchSize, offset)
+			for job := range jobs {
+				fn(ctx, job.ID, job.Size, job.Offset)
 			}
 		}()
 	}
 
-	// Send jobs to workers
-	log.Printf(
-		"Parallel Read (Started): Units: %d, Offset: %d, Total: %d, Chunks: %d, Chunk Size: %d, Batch Size: %d\n",
-		units, startOffset, total, chunks, chunkSize, batchSize,
-	)
-	for i := range chunks {
-		jobs <- i
+	// Enqueue jobs
+	for i := uint64(0); i < batches; i++ {
+		size := batchSize
+		if i == batches-1 && remainder > 0 {
+			size = remainder
+		}
+		offset := start + (batchSize * i)
+		jobs <- ChunkJob{
+			ID:     int(i),
+			Offset: offset,
+			Size:   size,
+		}
 	}
-	close(jobs) // Close job channel - no more jobs to be submitted
+	close(jobs)
 
-	// Background waits for results to be collected
-	// Close out channel after
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-
-	return out
+	// Wait for all workers to finish
+	wg.Wait()
 }
 
 // Transform stream contents
@@ -113,7 +107,8 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 	output := make(chan Out)
 	go func() {
 		defer close(output)
-		for data := range input {
+		var data In // reusable var - reduce memory consumption and gc work
+		for data = range input {
 			output <- fn(data)
 		}
 	}()
@@ -121,8 +116,8 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 }
 
 // Stream contents of a CSV File
-func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error) {
-	out := make(chan []map[string]string)
+func StreamCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
+	out := make(chan []map[string]any)
 
 	if batchSize <= 0 {
 		batchSize = 1
@@ -135,8 +130,8 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 	}
 
 	go func() {
-		defer file.Close()
 		defer close(out)
+		defer file.Close()
 
 		// Create a CSV reader
 		reader := csv.NewReader(file)
@@ -149,7 +144,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 		}
 
 		// Batch
-		records := []map[string]string{}
+		records := make([]map[string]any, 0)
 
 		// Stream the CSV content to the output stream
 		for {
@@ -164,7 +159,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 			}
 
 			// Map the row to a map[string]string using the header
-			record := make(map[string]string)
+			record := make(map[string]any)
 			for i, value := range row {
 				record[headers[i]] = value
 			}
@@ -175,7 +170,7 @@ func StreamCSV(path string, batchSize int64) (<-chan []map[string]string, error)
 			// Write the records to the output stream
 			if len(records) >= int(batchSize) {
 				out <- records
-				records = []map[string]string{} // Reset batch
+				records = make([]map[string]any, 0)
 			}
 		}
 
@@ -216,4 +211,32 @@ func ExtractNumber(s string) int {
 		}
 	}
 	return 0 // Default to 0 if no number is found
+}
+
+// Computes a SHA256 hash for a given byte slice.
+func CalculateHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+// Generates a random string for the given length
+func RandomString(length int) string {
+	bytes := make([]byte, length)
+	_, _ = rand.Read(bytes)
+	return hex.EncodeToString(bytes)[:length]
+}
+
+func CreateTextLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stdout, nil))
+}
+
+func GetTempBasePath(id string) string {
+	basePath := os.Getenv("RUNNER_TEMP")
+	if basePath == "" {
+		basePath = os.Getenv("TEMP_BASE_PATH")
+		if basePath == "" {
+			basePath = os.TempDir()
+		}
+	}
+	return filepath.Join(basePath, id)
 }

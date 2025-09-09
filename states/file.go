@@ -3,47 +3,43 @@ package states
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
+const FilePrefix = ".json"
+
 type FileStore[V any] struct {
-	mutex     sync.Mutex
-	path      string
-	mode      os.FileMode
-	_fullPath string
+	mutex    sync.Mutex
+	path     string
+	mode     os.FileMode
+	isClosed bool
 }
 
-func addSuffixToPath(path, suffix string) string {
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext) // Remove original extension
-	return base + suffix + ext
-}
-
-func (sm *FileStore[V]) getFullPath(key string) string {
-	if len(sm._fullPath) == 0 {
-		sm._fullPath = addSuffixToPath(sm.path, "-"+strings.ReplaceAll(strings.ToLower(key), " ", "-"))
-	}
-	return sm._fullPath
+func (sm *FileStore[V]) getItemPath(key string) string {
+	return filepath.Join(sm.path, strings.ReplaceAll(strings.ToLower(key), " ", "-")+FilePrefix)
 }
 
 // Sets the value for a key.
 func (sm *FileStore[V]) Store(ctx *context.Context, key string, value V) error {
+	if sm.isClosed {
+		return ErrClosed
+	}
+
 	// To JSON
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		log.Printf("error marshaling state: Error: %v", err)
-		return err
+		return fmt.Errorf("error marshaling state: Error: %w", err)
 	}
 	// Save to file
-	path := sm.getFullPath(key)
+	path := sm.getItemPath(key)
 	err = os.WriteFile(path, data, sm.mode)
 	if err != nil {
-		log.Printf("error saving state file: %s. Error: %v", path, err)
-		return err
+		return fmt.Errorf("error saving state file: %s. Error: %w", path, err)
 	}
 	return nil
 }
@@ -51,20 +47,24 @@ func (sm *FileStore[V]) Store(ctx *context.Context, key string, value V) error {
 // Load returns the value stored in the map for a key, or nil if no value is present.
 // The ok result indicates whether a value was found in the map.
 func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool) {
-	path := sm.getFullPath(key)
+	if sm.isClosed {
+		return value, false
+	}
+
+	path := sm.getItemPath(key)
 
 	// Read from the file
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("error reading state file: %s. Error: %v", path, err)
+			slog.Warn(fmt.Sprintf("Failed reading state file: %s. Error: %v", path, err))
 		}
 		return value, false
 	}
 	// Parse JSON
 	var result V
 	if err := json.Unmarshal(data, &result); err != nil {
-		log.Printf("error unmarshaling state file: %s. Error: %v", path, err)
+		slog.Warn(fmt.Sprintf("Failed unmarshaling state file: %s. Error: %v", path, err))
 		return value, false
 	}
 	return result, true
@@ -72,34 +72,53 @@ func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool
 
 // Deletes the value for a key.
 func (sm *FileStore[V]) Delete(ctx *context.Context, key string) error {
-	path := sm.getFullPath(key)
+	if sm.isClosed {
+		return ErrClosed
+	}
+
+	path := sm.getItemPath(key)
 	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
-		log.Printf("error deleting state file: %s. Error: %v", path, err)
-		return err
+		return fmt.Errorf("error deleting state file: %s. Error: %v", path, err)
 	}
 	return nil
 }
 
 // Deletes the value for a key.
 func (sm *FileStore[V]) Close(ctx *context.Context) error {
+	sm.isClosed = true
 	return nil
 }
 
 // Deletes the value for a key.
 func (sm *FileStore[V]) Clear(ctx *context.Context) error {
+	if sm.isClosed {
+		return ErrClosed
+	}
+
+	if err := os.RemoveAll(sm.path); err != nil {
+		return fmt.Errorf("FATAL: could not clear store directory: %v", err)
+	}
+	if err := os.MkdirAll(sm.path, 0644); err != nil {
+		return fmt.Errorf("FATAL: could not recreate store directory: %v", err)
+	}
 	return nil
 }
 
 // Creates and returns a new state store.
 func NewFileStateStore(basePath, storeName string) *FileStore[State] {
-	stateFilePath, err := filepath.Abs(filepath.Join(basePath, storeName))
+	path, err := filepath.Abs(filepath.Join(basePath, storeName))
 	if err != nil {
-		stateFilePath = storeName
+		path = filepath.Join(os.TempDir(), basePath, storeName)
 	}
+
+	if err := os.MkdirAll(path, 0644); err != nil {
+		panic(fmt.Sprintf("FATAL: could not create store directory: %v", err))
+	}
+
 	return &FileStore[State]{
 		mutex: sync.Mutex{},
-		path:  stateFilePath,
+		path:  path,
 		mode:  0644,
 	}
 }

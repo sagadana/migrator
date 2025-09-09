@@ -4,35 +4,42 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Features
 
-- Schema transformation
-- Parallel Loading: Break data into chunks and load in parallel
+- Batch processing
+- Source transformation
 - Auto Resuming: Resume from last success position if failed
+- Parallel Procesing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
+
+## Terminologies
+
+- **State Store**: Used for storing migration & replication states
+- **Datasource**: Connector to data origin. E.g Database, File, Bucket
+- **Pipeline**: Migration or Replication integration to transfer data from one datasource to another
 
 ## Datasources
 
-| Datasource | Status  |
-| ---------- | ------- |
-| `File`     | Done    |
-| `MongoDB`  | WIP     |
-| `Redis`    | Planned |
-| `Postgres` | Planned |
-| `<More>`   | Soon    |
+| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                  |
+| ---------- | ------- | ------------------ | --------------------------------------- |
+| `Memory`   | Done    | R/W                | Yes                                     |
+| `MongoDB`  | Done    | R/W                | Yes (_with replica set / cluster mode_) |
+| `Redis`    | WIP     | TBC                | TBC                                     |
+| `Postgres` | Planned | TBC                | TBC                                     |
+| `<More>`   | Soon    | TBC                | TBC                                     |
 
 ## State Stores
 
-_Used for storing replication states_
-
-| Datasource | Status  |
-| ---------- | ------- |
-| `Memory`   | Done    |
-| `File`     | Done    |
-| `Redis`    | Planned |
-| `<More>`   | Soon    |
+| Datasource | Status |
+| ---------- | ------ |
+| `Memory`   | Done   |
+| `File`     | Done   |
+| `Redis`    | WIP    |
+| `<More>`   | Soon   |
 
 ## Install
 
-`go get github.com/sagadana/migrator/datasources`
+```bash
+go get github.com/sagadana/migrator
+```
 
 ## Usage
 
@@ -42,9 +49,9 @@ _Used for storing replication states_
 package main
 
 import (
-	"github.com/sagadana/migrator/datasources"
-	"github.com/sagadana/migrator/pipelines"
-	"github.com/sagadana/migrator/states"
+ "github.com/sagadana/migrator/datasources"
+ "github.com/sagadana/migrator/pipelines"
+ "github.com/sagadana/migrator/states"
 )
 
 func main() {
@@ -55,7 +62,7 @@ func main() {
     // Create the `From` datasource _(File Data Source in this example)_
     fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
     // Load data from a CSV if needed
-    err := fromDs.LoadCSV(&ctx, "./tests/sample-100.csv", /*batch size*/ 10)
+    err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
     if err != nil {
         panic(err)
     }
@@ -73,12 +80,13 @@ func main() {
 
     // Start Migration + Replication
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-        ParallelLoad:               5,
-        BatchSize:                  10,
+        MigrationParallelWorkers:    5,
+        MigrationBatchSize:       10,
 
-        OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
-        OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-        OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
         panic(err)
@@ -98,19 +106,22 @@ func main() {
 
     // Start Migration + Replication
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
-        ParallelLoad:               5,
-        BatchSize:                  10,
+        MigrationParallelWorkers:      5,
+        MigrationBatchSize:         10,
+
         ContinuousReplication:      true,
         ReplicationBatchSize:       20,
         ReplicationBatchWindowSecs: 1,
 
-        OnMigrationStart:       func() { /* Add your logic. E.g extra logs */ },
-        OnMigrationProgress:    func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-        OnMigrationComplete:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
 
-        OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
-        OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-        OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnReplicationStart:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnReplicationProgress:  func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
         panic(err)
@@ -133,9 +144,10 @@ func main() {
         ReplicationBatchSize:       20,
         ReplicationBatchWindowSecs: 1,
 
-        OnReplicationStart:    func() { /* Add your logic. E.g extra logs */ },
-        OnReplicationProgress: func(count pipelines.MigrateCount) { /* Add your logic. E.g extra logs */ },
-        OnReplicationPause:    func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnReplicationStart:     func(state states.State) { /* Add your logic. E.g extra logs */ },
+        OnReplicationProgress:  func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
         panic(err)
@@ -146,14 +158,24 @@ func main() {
 
 ## Test
 
-Run:
+### Test States
 
 ```sh
-go test -v
+docker compose --env-file ./tests/.env.dev  up tester-state
 ```
 
-With docker:
+### Test Datasources
 
 ```sh
-docker compose up tester
+docker compose --env-file ./tests/.env.dev  up tester-ds
 ```
+
+### Test Pipelines
+
+```sh
+docker compose --env-file ./tests/.env.dev  up tester-pipe
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md)
