@@ -6,14 +6,14 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 - Batch processing
 - Source transformation
-- Auto Resuming: Resume from last success position if failed
-- Parallel Procesing: Break data into chunks and load in parallel
+- Auto Resuming: Resume from the last successful position - if failed
+- Parallel Processing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
 
 ## Terminologies
 
 - **State Store**: Used for storing migration & replication states
-- **Datasource**: Connector to data origin. E.g Database, File, Bucket
+- **Datasource**: Connector to data origin. E.g., Database, File, Bucket
 - **Pipeline**: Migration or Replication integration to transfer data from one datasource to another
 
 ## Datasources
@@ -60,7 +60,7 @@ func main() {
     defer cancel()
 
     // Create the `From` datasource _(File Data Source in this example)_
-    fromDs := datasources.NewFileDatasource("./tests", "test-from", "_id")
+    fromDs := datasources.NewMemoryDatasource("test-from", "id")
     // Load data from a CSV if needed
     err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
     if err != nil {
@@ -68,7 +68,7 @@ func main() {
     }
 
     // Create the `To` datasource _(File Data Source in this example)_
-    toDs := datasources.NewFileDatasource("./tests", "test-to", "_id")
+    toDs := datasources.NewMemoryDatasource("test-to", "id")
 
     // Initialize Pipeline
     pipeline := pipelines.Pipeline{
