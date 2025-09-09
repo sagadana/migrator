@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -57,7 +59,7 @@ func getTestStates(_ *context.Context) <-chan TestState {
 		// -----------------------
 		// 1. Memory
 		// -----------------------
-		id = "memory-datasource"
+		id = "memory-store"
 		out <- TestState{
 			id:    id,
 			store: states.NewMemoryStateStore(),
@@ -66,10 +68,29 @@ func getTestStates(_ *context.Context) <-chan TestState {
 		// -----------------------
 		// 2. File
 		// -----------------------
-		id = "file-datasource"
+		id = "file-store"
 		out <- TestState{
 			id:    id,
 			store: states.NewFileStateStore(getStatesTempBasePath(), id),
+		}
+
+		// -----------------------
+		// 3. Redis
+		// -----------------------
+		redisAddr := os.Getenv("REDIS_ADDR")
+		redisPass := os.Getenv("REDIS_PASS")
+		redisDb := 0
+		if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+			db, err := strconv.Atoi(dbStr)
+			if err != nil {
+				redisDb = db
+			}
+		}
+
+		id = "redis-store"
+		out <- TestState{
+			id:    id,
+			store: states.NewRedisStateStore(redisAddr, redisPass, redisDb, id),
 		}
 
 	}()

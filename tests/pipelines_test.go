@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,27 @@ func getTestStores(ctx *context.Context, instanceId string) <-chan TestStore {
 		// -----------------------
 		id = "file-state-store"
 		store = states.NewFileStateStore(filepath.Join(getPipelinesTempBasePath(), instanceId), id)
+		store.Clear(ctx)
+		out <- TestStore{
+			id:    id,
+			store: store,
+		}
+
+		// -----------------------
+		// 3. Redis
+		// -----------------------
+		redisAddr := os.Getenv("REDIS_ADDR")
+		redisPass := os.Getenv("REDIS_PASS")
+		redisDb := 0
+		if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+			db, err := strconv.Atoi(dbStr)
+			if err != nil {
+				redisDb = db
+			}
+		}
+
+		id = "redis-state-store"
+		store = states.NewRedisStateStore(redisAddr, redisPass, redisDb, fmt.Sprintf("%s:%s", id, instanceId))
 		store.Clear(ctx)
 		out <- TestStore{
 			id:    id,
