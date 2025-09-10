@@ -5,7 +5,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 ## Features
 
 - Batch processing
-- Source transformation
+- Source transformation: Modify, rename, delete fields
 - Auto Resuming: Resume from the last successful position - if failed
 - Parallel Processing: Break data into chunks and load in parallel
 - Continuous Replication: Watch for new changes and replicate them
@@ -59,7 +59,7 @@ func main() {
     ctx, cancel := context.WithCancel(context.TODO())
     defer cancel()
 
-    // Create the `From` datasource _(File Data Source in this example)_
+    // Create the `From` datasource _(Memory Data Source in this example)_
     fromDs := datasources.NewMemoryDatasource("test-from", "id")
     // Load data from a CSV if needed
     err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
@@ -67,7 +67,7 @@ func main() {
         panic(err)
     }
 
-    // Create the `To` datasource _(File Data Source in this example)_
+    // Create the `To` datasource _(Memory Data Source in this example)_
     toDs := datasources.NewMemoryDatasource("test-to", "id")
 
     // Initialize Pipeline
