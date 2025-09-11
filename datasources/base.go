@@ -129,8 +129,11 @@ func StreamChanges(
 						maps.Copy(batch.Updates, event.Updates)
 						batch.Deletes = append(batch.Deletes, event.Deletes...)
 					default:
-						// Channel is empty - stop draining
+						// Wait for batch window before ending
+						<-time.After(time.Duration(batchWindow) * time.Second)
 						// Send remaining batch
+						// TODO: Investigate if this could be causing downstream to
+						//   process logic that require context even when it is closed
 						if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
 							out <- DatasourceStreamResult{Docs: batch}
 							batch = *new(DatasourcePushRequest) // clean up batch

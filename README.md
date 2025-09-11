@@ -1,39 +1,34 @@
 # Migrator
 
+[![release](https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/release.yml)
+
 High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
 
 ## Features
 
-- Batch processing
-- Source transformation
-- Auto Resuming: Resume from the last successful position - if failed
-- Parallel Processing: Break data into chunks and load in parallel
-- Continuous Replication: Watch for new changes and replicate them
-
-## Terminologies
-
-- **State Store**: Used for storing migration & replication states
-- **Datasource**: Connector to data origin. E.g., Database, File, Bucket
-- **Pipeline**: Migration or Replication integration to transfer data from one datasource to another
+- **Source transformation**: Modify, rename, delete fields
+- **Auto Resuming**: Resume from the last successful position - if failed
+- **Batch Processing**: Process migration in batches
+- **Parallel Processing**: Break data into chunks and load in parallel
+- **Continuous Replication**: Watch for new changes and replicate them
 
 ## Datasources
 
-| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                  |
-| ---------- | ------- | ------------------ | --------------------------------------- |
-| `Memory`   | Done    | R/W                | Yes                                     |
-| `MongoDB`  | Done    | R/W                | Yes (_with replica set / cluster mode_) |
-| `Redis`    | WIP     | TBC                | TBC                                     |
-| `Postgres` | Planned | TBC                | TBC                                     |
-| `<More>`   | Soon    | TBC                | TBC                                     |
+| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                 |
+| ---------- | ------- | ------------------ | -------------------------------------- |
+| `Memory`   | ✅      | R/W                | ✅                                     |
+| `MongoDB`  | ✅      | R/W                | ✅ (_with replica set / cluster mode_) |
+| `Redis`    | WIP     | TBC                | TBC                                    |
+| `Postgres` | Planned | TBC                | TBC                                    |
+| `<More>`   | Soon    | TBC                | TBC                                    |
 
 ## State Stores
 
-| Datasource | Status |
-| ---------- | ------ |
-| `Memory`   | Done   |
-| `File`     | Done   |
-| `Redis`    | WIP    |
-| `<More>`   | Soon   |
+| Store    | Status |
+| -------- | ------ |
+| `Memory` | ✅     |
+| `File`   | ✅     |
+| `Redis`  | ✅     |
 
 ## Install
 
@@ -59,7 +54,7 @@ func main() {
     ctx, cancel := context.WithCancel(context.TODO())
     defer cancel()
 
-    // Create the `From` datasource _(File Data Source in this example)_
+    // Create the `From` datasource _(Memory Data Source in this example)_
     fromDs := datasources.NewMemoryDatasource("test-from", "id")
     // Load data from a CSV if needed
     err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
@@ -67,7 +62,7 @@ func main() {
         panic(err)
     }
 
-    // Create the `To` datasource _(File Data Source in this example)_
+    // Create the `To` datasource _(Memory Data Source in this example)_
     toDs := datasources.NewMemoryDatasource("test-to", "id")
 
     // Initialize Pipeline
@@ -78,16 +73,16 @@ func main() {
         Store: states.NewFileStateStore("./tests", "state"),
     }
 
-    // Start Migration + Replication
+    // Start Migration Only
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
         MigrationParallelWorkers:    5,
-        MigrationBatchSize:       10,
+        MigrationBatchSize:          10,
 
         OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnMigrationError:       func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
-    })
+    }, /*with replication*/ false)
     if err != nil {
         panic(err)
     }
@@ -107,9 +102,8 @@ func main() {
     // Start Migration + Replication
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
         MigrationParallelWorkers:      5,
-        MigrationBatchSize:         10,
+        MigrationBatchSize:            10,
 
-        ContinuousReplication:      true,
         ReplicationBatchSize:       20,
         ReplicationBatchWindowSecs: 1,
 
@@ -122,7 +116,7 @@ func main() {
         OnReplicationProgress:  func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
         OnReplicationError:     func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
-    })
+    }, /*with replication*/ true)
     if err != nil {
         panic(err)
     }
@@ -140,7 +134,6 @@ func main() {
 
     // Start Replication
     err = pipeline.Stream(&ctx, pipelines.PipelineConfig{
-        ContinuousReplication:      true,
         ReplicationBatchSize:       20,
         ReplicationBatchWindowSecs: 1,
 
@@ -156,7 +149,7 @@ func main() {
 
 ```
 
-## Test
+## Test Packages
 
 ### Test States
 
@@ -174,6 +167,12 @@ docker compose --env-file ./tests/.env.dev  up tester-ds
 
 ```sh
 docker compose --env-file ./tests/.env.dev  up tester-pipe
+```
+
+### Test Helpers
+
+```sh
+docker compose --env-file ./tests/.env.dev  up tester-helper
 ```
 
 ## Contributing
