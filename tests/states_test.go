@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -45,7 +47,7 @@ func getStatesTempBasePath() string {
 
 // Retrieve Test States
 // TODO: Add more states here to test...
-func getTestStates(_ *context.Context) <-chan TestState {
+func getTestStates(ctx *context.Context) <-chan TestState {
 	out := make(chan TestState)
 
 	// Reusable vars
@@ -57,7 +59,7 @@ func getTestStates(_ *context.Context) <-chan TestState {
 		// -----------------------
 		// 1. Memory
 		// -----------------------
-		id = "memory-datasource"
+		id = "memory-store"
 		out <- TestState{
 			id:    id,
 			store: states.NewMemoryStateStore(),
@@ -66,10 +68,29 @@ func getTestStates(_ *context.Context) <-chan TestState {
 		// -----------------------
 		// 2. File
 		// -----------------------
-		id = "file-datasource"
+		id = "file-store"
 		out <- TestState{
 			id:    id,
 			store: states.NewFileStateStore(getStatesTempBasePath(), id),
+		}
+
+		// -----------------------
+		// 3. Redis
+		// -----------------------
+		redisAddr := os.Getenv("REDIS_ADDR")
+		redisPass := os.Getenv("REDIS_PASS")
+		redisDb := 0
+		if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+			db, err := strconv.Atoi(dbStr)
+			if err != nil {
+				redisDb = db
+			}
+		}
+
+		id = "redis-store"
+		out <- TestState{
+			id:    id,
+			store: states.NewRedisStateStore(ctx, redisAddr, redisPass, redisDb, id),
 		}
 
 	}()
@@ -108,12 +129,12 @@ func TestStateJSONRoundTrip(t *testing.T) {
 	}
 
 	if !statesEqual(original, decoded) {
-		t.Errorf("❌ state mismatch after JSON round-trip:\nexpected %+v\ngot      %+v", original, decoded)
+		t.Errorf("❌ state mismatch after JSON round-trip:\nexpected %+v\ngot %+v", original, decoded)
 	}
 }
 
 func TestStateStoreLifecycle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(60)*time.Second)
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(30)*time.Minute) // Max 30 mins
 	defer func() {
 		time.Sleep(1 * time.Second) // Wait for logs
 		cancel()
@@ -125,6 +146,11 @@ func TestStateStoreLifecycle(t *testing.T) {
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(st.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
+
+			// Cleanup after
+			t.Cleanup(func() {
+				st.store.Clear(&ctx)
+			})
 
 			// 1) Loading a missing key should return ok=false
 			t.Run("LoadMissingKey", func(t *testing.T) {
@@ -159,7 +185,7 @@ func TestStateStoreLifecycle(t *testing.T) {
 					t.Fatal("⛔️ expected Load to find key1")
 				}
 				if !statesEqual(original, loaded) {
-					t.Errorf("❌ loaded state mismatch:\nexpected %+v\ngot      %+v", original, loaded)
+					t.Errorf("❌ loaded state mismatch:\nexpected %+v\ngot %+v", original, loaded)
 				}
 			})
 
@@ -219,7 +245,79 @@ func TestStateStoreLifecycle(t *testing.T) {
 				}
 			})
 
-			// 5) Close and ensure further ops fail
+			// 5) Test concurrent operations
+			t.Run("ConcurrentOperations", func(t *testing.T) {
+				const numGoroutines = 10
+				const numOperations = 50
+
+				// Create channels to coordinate goroutines
+				done := make(chan bool)
+				errs := make(chan error, numGoroutines*numOperations)
+
+				state := states.State{
+					MigrationStatus:        states.MigrationStatusInProgress,
+					MigrationTotal:         json.Number("100"),
+					MigrationOffset:        json.Number("42"),
+					MigrationIssue:         "none",
+					MigrationStartedAt:     time.Now().Truncate(time.Millisecond),
+					MigrationStoppedAt:     time.Now().Add(time.Minute).Truncate(time.Millisecond),
+					ReplicationStatus:      states.ReplicationStatusStreaming,
+					ReplicationIssue:       "replica error",
+					ReplicationStartedAt:   time.Now().Add(time.Hour).Truncate(time.Millisecond),
+					ReplicationStoppededAt: time.Now().Add(2 * time.Hour).Truncate(time.Millisecond),
+				}
+
+				// Launch goroutines that perform concurrent operations
+				for i := range numGoroutines {
+					go func(routineID int) {
+						for j := range numOperations {
+							key := fmt.Sprintf("concurrent-key-%d-%d", routineID, j)
+
+							// Store
+							if err := st.store.Store(&ctx, key, state); err != nil {
+								errs <- fmt.Errorf("store error: %v", err)
+								continue
+							}
+
+							// Load and verify
+							loaded, ok := st.store.Load(&ctx, key)
+							if !ok {
+								errs <- fmt.Errorf("failed to load key %s", key)
+								continue
+							}
+							if !statesEqual(state, loaded) {
+								errs <- fmt.Errorf("state mismatch for key %s", key)
+								continue
+							}
+
+							// Delete
+							if err := st.store.Delete(&ctx, key); err != nil {
+								errs <- fmt.Errorf("delete error: %v", err)
+								continue
+							}
+
+							// Verify deletion
+							if _, ok := st.store.Load(&ctx, key); ok {
+								errs <- fmt.Errorf("key %s still exists after deletion", key)
+							}
+						}
+						done <- true
+					}(i)
+				}
+
+				// Wait for all goroutines to complete
+				for range numGoroutines {
+					<-done
+				}
+				close(errs)
+
+				// Check for any errors
+				for err := range errs {
+					t.Errorf("❌ Concurrent operation error: %v", err)
+				}
+			})
+
+			// 6) Close and ensure further ops fail
 			t.Run("CloseAndCheckOps", func(t *testing.T) {
 				now1 := time.Now().Truncate(time.Millisecond)
 				now2 := now1.Add(time.Minute)
@@ -240,19 +338,20 @@ func TestStateStoreLifecycle(t *testing.T) {
 				if err := st.store.Close(&ctx); err != nil {
 					t.Errorf("❌ Close returned error: %v", err)
 				}
-				if err := st.store.Store(&ctx, "x", original); err != states.ErrClosed {
-					t.Errorf("❌ expected Store after Close to return states.ErrClosed, got %v", err)
+				if err := st.store.Store(&ctx, "x", original); err != states.ErrStoreClosed {
+					t.Errorf("❌ expected Store after Close to return states.ErrStoreClosed, got %v", err)
 				}
 				if _, ok := st.store.Load(&ctx, "a"); ok {
 					t.Error("❌ expected Load after Close to return ok=false")
 				}
-				if err := st.store.Delete(&ctx, "b"); err != states.ErrClosed {
-					t.Errorf("❌ expected Delete after Close to return states.ErrClosed, got %v", err)
+				if err := st.store.Delete(&ctx, "b"); err != states.ErrStoreClosed {
+					t.Errorf("❌ expected Delete after Close to return states.ErrStoreClosed, got %v", err)
 				}
-				if err := st.store.Clear(&ctx); err != states.ErrClosed {
-					t.Errorf("❌ expected Clear after Close to return states.ErrClosed, got %v", err)
+				if err := st.store.Clear(&ctx); err != states.ErrStoreClosed {
+					t.Errorf("❌ expected Clear after Close to return states.ErrStoreClosed, got %v", err)
 				}
 			})
+
 		})
 	}
 }

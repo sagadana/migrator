@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	ErrClosed = errors.New("store closed")
+	ErrStoreClosed = errors.New("store closed")
 )
 
 type MigrationStatusType string
