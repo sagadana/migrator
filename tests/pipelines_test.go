@@ -304,6 +304,11 @@ func testMigration(
 		t.Fatalf("⛔️ failed to get migration state")
 	}
 
+	migrationEstimateCount, err := state.MigrationTotal.Int64()
+	if err != nil {
+		t.Errorf("❌ failed to get migration estimate count: %s", err)
+	}
+
 	migrationTotal, err := state.MigrationTotal.Int64()
 	if err != nil {
 		t.Errorf("❌ failed to get migration total: %s", err)
@@ -322,6 +327,9 @@ func testMigration(
 	}
 	if expectedTotal != toTotal {
 		t.Errorf("❌ migration failed. Expected Migrated Total: '%d', Got '%d'", expectedTotal, toTotal)
+	}
+	if migrationTotal < migrationEstimateCount {
+		t.Errorf("❌ migration failed. Expected Migrated Total to be >= Estimate Count (%d): Got '%d'", migrationEstimateCount, migrationTotal)
 	}
 	if uint64(migrationTotal) != config.MigrationMaxSize {
 		t.Errorf("❌ migration failed. Expected State Total: '%d', Got '%d'", config.MigrationMaxSize, migrationTotal)
