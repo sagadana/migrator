@@ -406,6 +406,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 	// Track: In Progress
 	state.MigrationStatus = states.MigrationStatusInProgress
 	state.MigrationOffset = json.Number(strconv.FormatUint(startOffet, 10))
+	state.MigrationEstimateCount = json.Number(strconv.FormatUint(total, 10))
 	p.SetState(ctx, state)
 
 	slog.Info(fmt.Sprintf("Migration Started. Total: %d, Offset: %d", total, startOffet))
@@ -436,7 +437,6 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 
 			// Parse destination input from source
 			input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
-
 				if data.Err != nil {
 					if config.OnMigrationError != nil {
 						go config.OnMigrationError(state, fmt.Errorf("fetch error (%s): %w", p.ID, data.Err))

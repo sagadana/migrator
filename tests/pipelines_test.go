@@ -304,6 +304,11 @@ func testMigration(
 		t.Fatalf("⛔️ failed to get migration state")
 	}
 
+	migrationEstimateCount, err := state.MigrationTotal.Int64()
+	if err != nil {
+		t.Errorf("❌ failed to get migration estimate count: %s", err)
+	}
+
 	migrationTotal, err := state.MigrationTotal.Int64()
 	if err != nil {
 		t.Errorf("❌ failed to get migration total: %s", err)
@@ -322,6 +327,9 @@ func testMigration(
 	}
 	if expectedTotal != toTotal {
 		t.Errorf("❌ migration failed. Expected Migrated Total: '%d', Got '%d'", expectedTotal, toTotal)
+	}
+	if migrationTotal < migrationEstimateCount {
+		t.Errorf("❌ migration failed. Expected Migrated Total to be >= Estimate Count (%d): Got '%d'", migrationEstimateCount, migrationTotal)
 	}
 	if uint64(migrationTotal) != config.MigrationMaxSize {
 		t.Errorf("❌ migration failed. Expected State Total: '%d', Got '%d'", config.MigrationMaxSize, migrationTotal)
@@ -596,17 +604,16 @@ func testReplication(
 // -----------------------------
 
 func TestPipelineImplementations(t *testing.T) {
-	testCtx, testCancel := context.WithCancel(context.Background())
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		testCancel()
-	}()
+	testCtx := context.Background()
 
 	instanceId := helpers.RandomString(6)
+	logger := helpers.CreateTextLogger()
 
 	for tp := range getTestPipelines(&testCtx, instanceId) {
 
 		t.Run(tp.id, func(t *testing.T) {
+
+			t.Parallel() // Run pipelines tests in parallel
 
 			// Run tests for different state store types
 			for st := range getTestStores(&testCtx, fmt.Sprintf("%s-%s", tp.id, instanceId)) {
@@ -634,7 +641,7 @@ func TestPipelineImplementations(t *testing.T) {
 						From:   tp.source,
 						To:     tp.destination,
 						Store:  st.store,
-						Logger: helpers.CreateTextLogger(),
+						Logger: logger,
 					}
 
 					// ------------------------
