@@ -93,7 +93,9 @@ func (p *Pipeline) handleExit(ctx *context.Context, state *states.State, config 
 		} else if err != nil {
 			state.MigrationIssue = err.Error()
 		}
-		p.SetState(ctx, *state)
+		if err := p.SetState(ctx, *state); err != nil {
+			panic(err)
+		}
 
 		slog.Info("Migration Stopped")
 		if config.OnMigrationStopped != nil {
@@ -110,7 +112,9 @@ func (p *Pipeline) handleExit(ctx *context.Context, state *states.State, config 
 		} else if err != nil {
 			state.MigrationIssue = err.Error()
 		}
-		p.SetState(ctx, *state)
+		if err := p.SetState(ctx, *state); err != nil {
+			panic(err)
+		}
 
 		slog.Info("Replication Paused")
 		if config.OnReplicationStopped != nil {
@@ -304,7 +308,9 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 			ReplicationStatus:    states.ReplicationStatusStarting,
 			ReplicationStartedAt: time.Now(),
 		}
-		p.SetState(ctx, state)
+		if err := p.SetState(ctx, state); err != nil {
+			return err
+		}
 	}
 
 	// Working? end
@@ -317,7 +323,9 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 
 	// Track state - Streaming
 	state.ReplicationStatus = states.ReplicationStatusStreaming
-	p.SetState(ctx, state)
+	if err := p.SetState(ctx, state); err != nil {
+		return err
+	}
 
 	slog.Info("Replication Started")
 	if config.OnReplicationStart != nil {
@@ -358,7 +366,9 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 			MigrationTotal:     json.Number(strconv.FormatInt(0, 10)),
 			MigrationStartedAt: time.Now(),
 		}
-		p.SetState(ctx, state)
+		if err := p.SetState(ctx, state); err != nil {
+			return err
+		}
 	}
 
 	// Working? end
@@ -387,7 +397,9 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 		// Process continuous replication in the background
 		go func() {
 			defer wg.Done()
-			p.Stream(ctx, config)
+			if err := p.Stream(ctx, config); err != nil {
+				panic(err)
+			}
 		}()
 
 		// Wait for stream to end
@@ -398,7 +410,9 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 		state.MigrationStatus = states.MigrationStatusStopped
 		state.MigrationIssue = fmt.Sprintf("pipeline (%s) migration stopped due to empty source", p.ID)
 		state.MigrationStoppedAt = time.Now()
-		p.SetState(ctx, state)
+		if err := p.SetState(ctx, state); err != nil {
+			return err
+		}
 
 		return ErrPipelineMigrationEmptySource
 	}
@@ -407,7 +421,9 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 	state.MigrationStatus = states.MigrationStatusInProgress
 	state.MigrationOffset = json.Number(strconv.FormatUint(startOffet, 10))
 	state.MigrationEstimateCount = json.Number(strconv.FormatUint(total, 10))
-	p.SetState(ctx, state)
+	if err := p.SetState(ctx, state); err != nil {
+		return err
+	}
 
 	slog.Info(fmt.Sprintf("Migration Started. Total: %d, Offset: %d", total, startOffet))
 	if config.OnMigrationStart != nil {
@@ -473,14 +489,18 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 					}
 				}
 
-				p.SetState(ctx, state)
+				if err := p.SetState(ctx, state); err != nil {
+					slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
+				}
 			})
 		})
 
 	// Track: Success
 	state.MigrationStatus = states.MigrationStatusCompleted
 	state.MigrationStoppedAt = time.Now()
-	p.SetState(ctx, state)
+	if err := p.SetState(ctx, state); err != nil {
+		return err
+	}
 
 	slog.Info(fmt.Sprintf("Migration Completed. Total: %s, Offset: %s", state.MigrationTotal, state.MigrationOffset))
 	if config.OnMigrationStopped != nil {

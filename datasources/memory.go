@@ -39,7 +39,7 @@ func clone[T any](src map[string]T) map[string]T {
 	return dst
 }
 
-func (m *MemoryDatasource) getId(data map[string]any) (val string, err error) {
+func (m *MemoryDatasource) getID(data map[string]any) (val string, err error) {
 	id, ok := data[m.idField]
 	if ok {
 		return fmt.Sprintf("%v", id), err
@@ -140,7 +140,7 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 
 	// Inserts
 	for _, doc := range request.Inserts {
-		id, err := m.getId(doc)
+		id, err := m.getID(doc)
 		if err != nil {
 			return count, err
 		}
