@@ -71,7 +71,7 @@ func main() {
         Store: states.NewFileStateStore("./tests", "state"),
     }
 
-    // Start Migration + Replication
+    // Start Migration Only
     err = pipeline.Start(&ctx, pipelines.PipelineConfig{
         MigrationParallelWorkers:    5,
         MigrationBatchSize:          10,

@@ -196,16 +196,19 @@ func TestDatasourceImplementations(t *testing.T) {
 
 				// Number of concurrent operations
 				numOps := 10
-				wg := sync.WaitGroup{}
+				wg := new(sync.WaitGroup)
 				wg.Add(numOps * 3) // Insert, Update, Delete operations
 
 				// Channel to collect results
 				resultCh := make(chan error, numOps*3)
 
 				// Concurrent inserts
+				insWg := new(sync.WaitGroup)
 				for i := range numOps {
+					insWg.Add(1)
 					go func(i int) {
 						defer wg.Done()
+						defer insWg.Done()
 						req := &datasources.DatasourcePushRequest{
 							Inserts: []map[string]any{
 								{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
@@ -217,7 +220,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Wait for inserts to complete
-				<-time.After(time.Second)
+				insWg.Wait()
 
 				// Verify count after inserts
 				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != uint64(numOps) {
@@ -225,9 +228,12 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Concurrent updates
+				updWg := new(sync.WaitGroup)
 				for i := range numOps {
+					updWg.Add(1)
 					go func(i int) {
 						defer wg.Done()
+						defer updWg.Done()
 						req := &datasources.DatasourcePushRequest{
 							Updates: map[string]map[string]any{
 								fmt.Sprintf("concurrent-%d", i): {TestAField: fmt.Sprintf("updated-%d", i)},
@@ -239,7 +245,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Wait for updates to complete
-				<-time.After(time.Second)
+				updWg.Wait()
 
 				// Verify updates
 				res := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
@@ -252,9 +258,12 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Concurrent deletes
+				delWg := new(sync.WaitGroup)
 				for i := range numOps {
+					delWg.Add(1)
 					go func(i int) {
 						defer wg.Done()
+						defer delWg.Done()
 						req := &datasources.DatasourcePushRequest{
 							Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
 						}
@@ -262,6 +271,9 @@ func TestDatasourceImplementations(t *testing.T) {
 						resultCh <- err
 					}(i)
 				}
+
+				// Wait for delete to complete
+				delWg.Wait()
 
 				// Wait for all operations to complete
 				wg.Wait()

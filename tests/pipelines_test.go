@@ -126,8 +126,6 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		id = "test-mem-to-mem-pipeline"
 		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
 		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
-		fromDs.Clear(ctx)
-		toDs.Clear(ctx)
 
 		out <- TestPipeline{
 			id:          id,
@@ -163,8 +161,6 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 				},
 			},
 		)
-		fromDs.Clear(ctx)
-		toDs.Clear(ctx)
 
 		// --------------- 2.1. Memory to Mongo --------------- //
 
@@ -195,8 +191,6 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 			},
 		)
 		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
-		fromDs.Clear(ctx)
-		toDs.Clear(ctx)
 
 		// Send test job // TODO: Fix
 		out <- TestPipeline{
@@ -229,9 +223,6 @@ func testMigration(
 	evWg := new(sync.WaitGroup)
 	evWg.Add(2)
 
-	dupWg := new(sync.WaitGroup)
-	dupWg.Add(1)
-
 	config.OnMigrationStart = func(state states.State) {
 		evStarted = true
 		defer evWg.Done()
@@ -242,7 +233,6 @@ func testMigration(
 
 		// Attempt starting migration again
 		//   expects to fail with error that migration is currently running
-		defer dupWg.Done()
 		err := pipeline.Start(ctx, &pipelines.PipelineConfig{}, false)
 		if err != pipelines.ErrPipelineMigrating {
 			t.Errorf("❌ expect migration duplicate error: '%s', got: '%s'", pipelines.ErrPipelineMigrating, err)
@@ -287,9 +277,6 @@ func testMigration(
 	if err != nil {
 		t.Fatalf("⛔️ failed to process migration: %s", err)
 	}
-
-	// Wait for duplicate migration test
-	dupWg.Wait()
 
 	// Wait for migration start-stop events
 	evWg.Wait()
@@ -506,8 +493,6 @@ func testReplication(
 		}
 	}
 
-	dupWg := new(sync.WaitGroup)
-	dupWg.Add(1)
 	config.OnReplicationStart = func(state states.State) {
 		evStarted = true
 		defer evWg.Done()
@@ -518,18 +503,15 @@ func testReplication(
 
 		// Attempt starting replication again
 		//   expects to fail with error that replication is currently running
-		defer dupWg.Done()
 		err := pipeline.Stream(&crCtx, &pipelines.PipelineConfig{})
 		if err != pipelines.ErrPipelineReplicating {
 			t.Errorf("❌ expect replication duplicate error: '%s', got: '%s'", pipelines.ErrPipelineReplicating, err)
 		}
 
 		// Start background updates
-		if replicationOnly {
-			<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
-			crStart <- true                                     // Send event to trigger background updates
-			close(crStart)                                      // No more updates expected
-		}
+		<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
+		crStart <- true                                     // Send event to trigger background updates
+		close(crStart)
 	}
 
 	if replicationOnly { // Test Replication Only
@@ -538,15 +520,6 @@ func testReplication(
 			t.Errorf("❌ continuous replication failed: %s", err.Error())
 		}
 	} else { // Test Migration + Replication
-		config.OnMigrationStopped = func(state states.State) {
-			// Start background updates after migration completed
-			if state.MigrationStatus == states.MigrationStatusCompleted {
-				t.Log("OnMigrationStopped triggered")
-				<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
-				crStart <- true                                     // Send event to trigger background updates
-				close(crStart)                                      // No more updates expected
-			}
-		}
 		err = pipeline.Start(&crCtx, config, true)
 		if err != nil {
 			t.Errorf("❌ migration + continuous replication failed: %s", err.Error())
@@ -555,9 +528,6 @@ func testReplication(
 
 	// Wait for background updates to be made
 	crWg.Wait()
-
-	// Wait for duplicate migration test
-	dupWg.Wait()
 
 	// Wait for replication start-stop events
 	evWg.Wait()
@@ -653,6 +623,7 @@ func TestPipelineImplementations(t *testing.T) {
 					})
 
 					// Load sample data into source
+					tp.source.Clear(&testCtx)
 					err := datasources.LoadCSV(&testCtx, tp.source, TestDatasetPath, 10)
 					if err != nil {
 						panic(fmt.Errorf("failed to load data from CSV to '%s' source: %s", tp.id, err))
