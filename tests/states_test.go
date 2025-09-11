@@ -134,18 +134,20 @@ func TestStateJSONRoundTrip(t *testing.T) {
 }
 
 func TestStateStoreLifecycle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(30)*time.Minute) // Max 30 mins
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		cancel()
-	}()
+	testCtx := context.Background()
+
 	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
 
-	for st := range getTestStates(&ctx) {
+	for st := range getTestStates(&testCtx) {
 
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(st.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
+
+			t.Parallel() // Run states tests in parallel
+
+			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
+			defer cancel()
 
 			// Cleanup after
 			t.Cleanup(func() {

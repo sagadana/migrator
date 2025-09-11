@@ -94,19 +94,22 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 // --------
 
 func TestDatasourceImplementations(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(30)*time.Minute) // Max 30 mins
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		cancel()
-	}()
+	testCtx := context.Background()
+
 	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
 
 	instanceId := helpers.RandomString(6)
 
-	for td := range getTestDatasources(&ctx, instanceId) {
+	for td := range getTestDatasources(&testCtx, instanceId) {
+
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
+
+			t.Parallel() // Run datasources tests in parallel
+
+			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
+			defer cancel()
 
 			// Cleanup after
 			t.Cleanup(func() {
