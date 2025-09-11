@@ -5,7 +5,7 @@ go 1.23.8
 toolchain go1.24.5
 
 require (
-	github.com/go-redis/redis/v8 v8.11.5
+	github.com/go-redis/redis/v9 v9.14.0
 	go.mongodb.org/mongo-driver v1.17.4
 )
 
