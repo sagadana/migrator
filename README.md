@@ -1,5 +1,7 @@
 # Migrator
 
+[![release](https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/release.yml)
+
 High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
 
 ## Features
