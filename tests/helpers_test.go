@@ -274,7 +274,7 @@ func TestStreamCSV(t *testing.T) {
 				path = writeTempFile(t, tt.content)
 			}
 
-			ch, err := helpers.StreamCSV(path, tt.batchSize)
+			ch, err := helpers.StreamReadCSV(path, tt.batchSize)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("⛔️ expected error for path %q, got nil", path)

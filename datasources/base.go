@@ -15,6 +15,7 @@ type DatasourcePushRequest struct {
 	Updates map[string]map[string]any
 	Deletes []string
 }
+
 type DatasourcePushCount struct {
 	Inserts uint64
 	Updates uint64
@@ -30,13 +31,6 @@ type DatasourceFetchRequest struct {
 	Offset uint64
 }
 
-type DatasourceStreamRequest struct {
-	// TODO: Add support for StartFromTimestamp
-	// Number of items to batch. 0 to disable batching (optional)
-	BatchSize uint64
-	// How long to wait to accumulate batch (optional)
-	BatchWindowSeconds uint64
-}
 type DatasourceFetchResult struct {
 	Err  error
 	Docs []map[string]any
@@ -45,10 +39,38 @@ type DatasourceFetchResult struct {
 	// End offset: where first offset = 0
 	End uint64
 }
+
+type DatasourceStreamRequest struct {
+	// TODO: Add support for StartFromTimestamp
+	// Number of items to batch. 0 to disable batching (optional)
+	BatchSize uint64
+	// How long to wait to accumulate batch (optional)
+	BatchWindowSeconds uint64
+}
+
 type DatasourceStreamResult struct {
 	Err  error
 	Docs DatasourcePushRequest
 }
+
+type ImportType string
+
+const (
+	ImportTypeCSV ImportType = "csv"
+)
+
+type ImportSource string
+
+const (
+	ImportSourceFile ImportType = "file"
+)
+
+type DatasourceImportRequest struct {
+	Type     ImportType
+	Source   ImportSource
+	Location string
+}
+
 type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
@@ -63,6 +85,9 @@ type Datasource interface {
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
 	// Clear data source
 	Clear(ctx *context.Context) error
+
+	// Import contents
+	// Import(ctx *context.Context, request DatasourceImportRequest) error
 }
 
 // Load CSV data into datasource
@@ -72,7 +97,31 @@ func LoadCSV(
 	path string,
 	batchSize uint64,
 ) error {
-	result, err := helpers.StreamCSV(path, batchSize)
+	result, err := helpers.StreamReadCSV(path, batchSize)
+	if err != nil {
+		return err
+	}
+
+	for data := range result {
+		_, err = ds.Push(ctx, &DatasourcePushRequest{
+			Inserts: data,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Save datasource into CSV
+func SaveCSV(
+	ctx *context.Context,
+	ds Datasource,
+	path string,
+	batchSize uint64,
+) error {
+	result, err := helpers.StreamReadCSV(path, batchSize)
 	if err != nil {
 		return err
 	}
