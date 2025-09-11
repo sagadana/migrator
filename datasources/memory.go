@@ -201,5 +201,6 @@ func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStream
 
 func (m *MemoryDatasource) Clear(_ *context.Context) error {
 	m.data.Clear()
+	m.ids = make([]string, 0)
 	return nil
 }

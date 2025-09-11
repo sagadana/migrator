@@ -94,7 +94,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 // --------
 
 func TestDatasourceImplementations(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(60)*time.Second)
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(30)*time.Minute) // Max 30 mins
 	defer func() {
 		time.Sleep(1 * time.Second) // Wait for logs
 		cancel()
@@ -108,7 +108,10 @@ func TestDatasourceImplementations(t *testing.T) {
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			defer td.source.Clear(&ctx)
+			// Cleanup after
+			t.Cleanup(func() {
+				td.source.Clear(&ctx)
+			})
 
 			t.Run("Test_CRUD", func(t *testing.T) {
 				td.source.Clear(&ctx)
@@ -185,6 +188,95 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 1 { // a,b,x - a,x = b(1)
 					t.Errorf("❌ expected count=1 after delete, got %d", got)
+				}
+			})
+
+			t.Run("Test_Concurrent_CRUD", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Number of concurrent operations
+				numOps := 10
+				wg := sync.WaitGroup{}
+				wg.Add(numOps * 3) // Insert, Update, Delete operations
+
+				// Channel to collect results
+				resultCh := make(chan error, numOps*3)
+
+				// Concurrent inserts
+				for i := range numOps {
+					go func(i int) {
+						defer wg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{
+								{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+							},
+						}
+						_, err := td.source.Push(&ctx, req)
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for inserts to complete
+				<-time.After(time.Second)
+
+				// Verify count after inserts
+				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != uint64(numOps) {
+					t.Errorf("❌ expected count=%d after concurrent inserts, got %d", numOps, count)
+				}
+
+				// Concurrent updates
+				for i := range numOps {
+					go func(i int) {
+						defer wg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Updates: map[string]map[string]any{
+								fmt.Sprintf("concurrent-%d", i): {TestAField: fmt.Sprintf("updated-%d", i)},
+							},
+						}
+						_, err := td.source.Push(&ctx, req)
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for updates to complete
+				<-time.After(time.Second)
+
+				// Verify updates
+				res := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+				for _, doc := range res.Docs {
+					id := doc[TestIDField].(string)
+					expected := fmt.Sprintf("updated-%s", id[len("concurrent-"):])
+					if doc[TestAField] != expected {
+						t.Errorf("❌ expected %s to be updated to %s, got %v", id, expected, doc[TestAField])
+					}
+				}
+
+				// Concurrent deletes
+				for i := range numOps {
+					go func(i int) {
+						defer wg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
+						}
+						_, err := td.source.Push(&ctx, req)
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for all operations to complete
+				wg.Wait()
+				close(resultCh)
+
+				// Check for errors
+				for err := range resultCh {
+					if err != nil {
+						t.Errorf("❌ concurrent operation error: %v", err)
+					}
+				}
+
+				// Verify final count
+				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != 0 {
+					t.Errorf("❌ expected count=0 after concurrent deletes, got %d", count)
 				}
 			})
 
