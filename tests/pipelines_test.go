@@ -604,7 +604,7 @@ func testReplication(
 // -----------------------------
 
 func TestPipelineImplementations(t *testing.T) {
-	testCtx, testCancel := context.WithCancel(context.Background())
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(30)*time.Minute)
 	defer func() {
 		time.Sleep(1 * time.Second) // Wait for logs
 		testCancel()
