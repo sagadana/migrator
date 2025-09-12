@@ -1,9 +1,19 @@
 # Migrator
 
-[![release](https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/release.yml)
-[![CodeQL](https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/codeql.yml)
+<div align="start">
+ <span>
+  <img src="https://img.shields.io/github/v/release/sagadana/migrator?display_name=tag&sort=semver&logo=github&style=flat-square&label=version" alt="Release%20by%20tag" />
+  <img src="https://img.shields.io/github/release-date/sagadana/migrator?display_name=tag&sort=semver&logo=github&style=flat-square&label=date" alt="Release%20by%20date" />
+  <img src="https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" />
+  <img src="https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg" alt="Tests" />
+ </span>
+</div>
 
+<br/>
+
+<div align="start">
 High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
+</div>
 
 ## Features
 
