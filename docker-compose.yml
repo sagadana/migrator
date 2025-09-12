@@ -2,23 +2,12 @@ services:
   # ---------------------
   # Test
   # ---------------------
-  tester-helper:
-    build:
-      context: .
-    volumes:
-      - .:/usr/src/app
-    command: go test -v /usr/src/app/tests/helpers_test.go
-    networks:
-      - dev-network
-    env_file:
-      - ./tests/.env.dev
-
   tester-state:
     build:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v /usr/src/app/tests/states_test.go
+    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
     networks:
       - dev-network
     env_file:
@@ -32,7 +21,7 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v /usr/src/app/tests/datasources_test.go
+    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
     networks:
       - dev-network
     env_file:
@@ -50,7 +39,7 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v /usr/src/app/tests/pipelines_test.go
+    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
     networks:
       - dev-network
     env_file:
@@ -62,6 +51,17 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+
+  tester-helper:
+    build:
+      context: .
+    volumes:
+      - .:/usr/src/app
+    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
 
   # ---------------------
   # Redis
@@ -172,8 +172,10 @@ services:
       - bash
       - -c
       - |
-        chmod +x /scripts/replica-init.sh
-        exec /scripts/replica-init.sh $$@
+        cat /scripts/replica-init.sh > /usr/bin/replica-init.sh
+        sed -i 's/\r$//' /usr/bin/replica-init.sh # remove windows carriage-returns
+        chmod +x /usr/bin/replica-init.sh
+        exec /usr/bin/replica-init.sh $$@
 
 networks:
   dev-network:

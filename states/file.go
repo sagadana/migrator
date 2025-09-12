@@ -14,9 +14,10 @@ import (
 const FilePrefix = ".json"
 
 type FileStore[V any] struct {
-	mutex    sync.Mutex
-	path     string
-	mode     os.FileMode
+	mutex *sync.Mutex
+	path  string
+	mode  os.FileMode
+
 	isClosed bool
 }
 
@@ -26,8 +27,11 @@ func (sm *FileStore[V]) getItemPath(key string) string {
 
 // Sets the value for a key.
 func (sm *FileStore[V]) Store(ctx *context.Context, key string, value V) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
 	if sm.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	// To JSON
@@ -47,6 +51,9 @@ func (sm *FileStore[V]) Store(ctx *context.Context, key string, value V) error {
 // Load returns the value stored in the map for a key, or nil if no value is present.
 // The ok result indicates whether a value was found in the map.
 func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool) {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
 	if sm.isClosed {
 		return value, false
 	}
@@ -72,8 +79,11 @@ func (sm *FileStore[V]) Load(ctx *context.Context, key string) (value V, ok bool
 
 // Deletes the value for a key.
 func (sm *FileStore[V]) Delete(ctx *context.Context, key string) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
 	if sm.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	path := sm.getItemPath(key)
@@ -84,16 +94,19 @@ func (sm *FileStore[V]) Delete(ctx *context.Context, key string) error {
 	return nil
 }
 
-// Deletes the value for a key.
+// Close store
 func (sm *FileStore[V]) Close(ctx *context.Context) error {
 	sm.isClosed = true
 	return nil
 }
 
-// Deletes the value for a key.
+// Clear all values from store
 func (sm *FileStore[V]) Clear(ctx *context.Context) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
 	if sm.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	if err := os.RemoveAll(sm.path); err != nil {
@@ -105,8 +118,8 @@ func (sm *FileStore[V]) Clear(ctx *context.Context) error {
 	return nil
 }
 
-// Creates and returns a new state store.
-func NewFileStateStore(basePath, storeName string) *FileStore[State] {
+// Creates and returns a new generic file store.
+func NewFileStore[V any](basePath, storeName string) *FileStore[V] {
 	path, err := filepath.Abs(filepath.Join(basePath, storeName))
 	if err != nil {
 		path = filepath.Join(os.TempDir(), basePath, storeName)
@@ -116,9 +129,14 @@ func NewFileStateStore(basePath, storeName string) *FileStore[State] {
 		panic(fmt.Sprintf("FATAL: could not create store directory: %v", err))
 	}
 
-	return &FileStore[State]{
-		mutex: sync.Mutex{},
+	return &FileStore[V]{
+		mutex: new(sync.Mutex),
 		path:  path,
 		mode:  0644,
 	}
+}
+
+// Creates and returns a new file state store.
+func NewFileStateStore(basePath, storeName string) *FileStore[State] {
+	return NewFileStore[State](basePath, storeName)
 }

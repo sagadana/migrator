@@ -19,8 +19,14 @@ We welcome all contributions, whether it's bug reports, feature suggestions, or 
    Run the following command to install any required dependencies:
 
    ```bash
-   mod tidy
+   go mod tidy
    ```
+
+## Terminologies
+
+- **State Store**: Used for storing migration & replication states
+- **Datasource**: Connector to data origin. E.g., Database, File, Bucket
+- **Pipeline**: Migration or Replication integration to transfer data from one datasource to another
 
 ## Run Tests
 
@@ -40,6 +46,12 @@ docker compose --env-file ./tests/.env.dev  up tester-ds
 
 ```sh
 docker compose --env-file ./tests/.env.dev  up tester-pipe
+```
+
+### Test Helpers
+
+```sh
+docker compose --env-file ./tests/.env.dev  up tester-helper
 ```
 
 ## How to Contribute

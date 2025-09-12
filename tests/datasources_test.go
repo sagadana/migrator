@@ -11,18 +11,25 @@ import (
 
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type TestDatasource struct {
 	id     string
 	source datasources.Datasource
+
+	withFilter      bool // Datasource supports filtering
+	withWatchFilter bool // Datasource supports watch filtering
+	withSort        bool // Datasource supports sorting
 }
 
 const (
 	TestIDField string = "id"
 	TestAField  string = "fieldA"
 	TestBField  string = "fieldB"
+
+	TestFilterOutField string = "filterOut"
+	TestSortAscField   string = "sortAsc"
 )
 
 // --------
@@ -63,16 +70,23 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 
 		id = "mongo-datasource"
 		out <- TestDatasource{
-			id: id,
+			id:              id,
+			withFilter:      true,
+			withWatchFilter: true,
+			withSort:        true,
 			source: datasources.NewMongoDatasource(
 				ctx,
 				datasources.MongoDatasourceConfigs{
 					URI:            mongoURI,
 					DatabaseName:   mongoDB,
 					CollectionName: getDsName(id),
-					Filter:         map[string]any{},
-					Sort:           map[string]any{},
 					AccurateCount:  true,
+					Filter: map[string]any{
+						TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
+					},
+					Sort: map[string]any{
+						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+					},
 					WithTransformer: func(data map[string]any) (map[string]any, error) {
 						data[datasources.MongoIDField] = data[TestIDField]
 						return data, nil
@@ -94,21 +108,30 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 // --------
 
 func TestDatasourceImplementations(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(60)*time.Second)
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		cancel()
-	}()
+	testCtx := context.Background()
+
 	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
 
 	instanceId := helpers.RandomString(6)
 
-	for td := range getTestDatasources(&ctx, instanceId) {
+	for td := range getTestDatasources(&testCtx, instanceId) {
+
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			defer td.source.Clear(&ctx)
+			t.Cleanup(func() {
+				td.source.Close(&testCtx)
+			})
+			t.Parallel() // Run datasources tests in parallel
+
+			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
+			defer cancel()
+
+			// Cleanup after
+			t.Cleanup(func() {
+				td.source.Clear(&ctx)
+			})
 
 			t.Run("Test_CRUD", func(t *testing.T) {
 				td.source.Clear(&ctx)
@@ -170,7 +193,9 @@ func TestDatasourceImplementations(t *testing.T) {
 
 				// 7) Verify update applied
 				fetchRes3 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"a"}})
-				if fetchRes3.Docs[0][TestAField] != "fooood" {
+				if len(fetchRes3.Docs) == 0 {
+					t.Errorf("❌ did not expect empty docs after update")
+				} else if fetchRes3.Docs[0][TestAField] != "fooood" {
 					t.Errorf("❌ expected %s='fooood', got %v", TestAField, fetchRes3.Docs[0][TestAField])
 				}
 
@@ -185,6 +210,113 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 1 { // a,b,x - a,x = b(1)
 					t.Errorf("❌ expected count=1 after delete, got %d", got)
+				}
+			})
+
+			t.Run("Test_Concurrent_CRUD", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Number of concurrent operations
+				numOps := 10
+				wg := new(sync.WaitGroup)
+				wg.Add(numOps * 3) // Insert, Update, Delete operations
+
+				// Channel to collect results
+				resultCh := make(chan error, numOps*3)
+
+				// Concurrent inserts
+				insWg := new(sync.WaitGroup)
+				for i := range numOps {
+					insWg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						defer insWg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{
+								{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+							},
+						}
+						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for inserts to complete
+				insWg.Wait()
+
+				// Verify count after inserts
+				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != uint64(numOps) {
+					t.Errorf("❌ expected count=%d after concurrent inserts, got %d", numOps, count)
+				}
+
+				// Concurrent updates
+				updWg := new(sync.WaitGroup)
+				for i := range numOps {
+					updWg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						defer updWg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Updates: map[string]map[string]any{
+								fmt.Sprintf("concurrent-%d", i): {TestAField: fmt.Sprintf("updated-%d", i)},
+							},
+						}
+						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for updates to complete
+				updWg.Wait()
+
+				// Verify updates
+				res := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+				for _, doc := range res.Docs {
+					id := doc[TestIDField].(string)
+					expected := fmt.Sprintf("updated-%s", id[len("concurrent-"):])
+					if doc[TestAField] != expected {
+						t.Errorf("❌ expected %s to be updated to %s, got %v", id, expected, doc[TestAField])
+					}
+				}
+
+				// Concurrent deletes
+				delWg := new(sync.WaitGroup)
+				for i := range numOps {
+					delWg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						defer delWg.Done()
+						req := &datasources.DatasourcePushRequest{
+							Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
+						}
+						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+						resultCh <- err
+					}(i)
+				}
+
+				// Wait for delete to complete
+				delWg.Wait()
+
+				// Wait for all operations to complete
+				wg.Wait()
+				close(resultCh)
+
+				// Wait a bit for all changes to propagate
+				<-time.After(time.Duration(500 * time.Millisecond))
+
+				// Check for errors
+				for err := range resultCh {
+					if err != nil {
+						t.Errorf("❌ concurrent operation error: %v", err)
+					}
+				}
+
+				// Verify final count
+				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != 0 {
+					t.Errorf("❌ expected count=0 after concurrent deletes, got %d", count)
 				}
 			})
 
@@ -211,7 +343,12 @@ func TestDatasourceImplementations(t *testing.T) {
 						}
 						// Update previous 1
 						if i > 0 {
-							r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i-1): {TestBField: fmt.Sprintf("%s-%d", random, i-1)}}
+							// Last one contains filter out field - if filter supported
+							if td.withWatchFilter && i == evCnt-1 {
+								r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i): {TestFilterOutField: "yes"}}
+							} else {
+								r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i-1): {TestBField: fmt.Sprintf("%s-%d", random, i-1)}}
+							}
 						}
 						// Delete previous 2
 						if i > 1 {
@@ -257,7 +394,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						gotInsert += uint64(len(evt.Docs.Inserts))
 						gotUpdate += uint64(len(evt.Docs.Updates))
 						gotDelete += uint64(len(evt.Docs.Deletes))
-					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+100) * time.Millisecond): // Wait for watch batch window
+					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+500) * time.Millisecond): // Wait for watch batch window
 						watchCancel() // Stop watching
 						break loop
 					}
@@ -266,16 +403,17 @@ func TestDatasourceImplementations(t *testing.T) {
 				// Wait for background pushes to complete
 				rWg.Wait()
 
-				if gotInsert < expInsert {
-					t.Errorf("❌ watch inserts: expected >=%d, got %d", expInsert, gotInsert)
+				if gotInsert != expInsert {
+					t.Errorf("❌ watch inserts: expected %d, got %d", expInsert, gotInsert)
 				}
-				if gotUpdate < expUpdate {
-					t.Errorf("❌ watch updates: expected >=%d, got %d", expUpdate, gotUpdate)
+				if td.withWatchFilter && gotUpdate != expUpdate-1 { // Expexts 1 less if filter enabled
+					t.Errorf("❌ watch updates: expecte %d, got %d", expUpdate-1, gotUpdate)
+				} else if !td.withWatchFilter && gotUpdate != expUpdate {
+					t.Errorf("❌ watch updates: expected %d, got %d", expUpdate, gotUpdate)
 				}
-				if gotDelete < expDelete {
-					t.Errorf("❌ watch deletes: expected >=%d, got %d", expDelete, gotDelete)
+				if gotDelete != expDelete {
+					t.Errorf("❌ watch deletes: expected %d, got %d", expDelete, gotDelete)
 				}
-
 			})
 
 			t.Run("Test_Fetch", func(t *testing.T) {
@@ -485,6 +623,73 @@ func TestDatasourceImplementations(t *testing.T) {
 					})
 				}
 			})
+
+			// Test filtering if available
+			if td.withFilter {
+				t.Run("Test_Fetch_Filter", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data with and without deletedAt field
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo", TestFilterOutField: true},
+							{TestIDField: "b", TestAField: "bar"},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					// Fetch should return only non-deleted records due to filter
+					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+					if fetchRes.Err != nil {
+						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+					}
+					if len(fetchRes.Docs) != 1 || fetchRes.Docs[0][TestIDField] != "b" {
+						t.Errorf("❌ expected single non-deleted doc with id 'b', got %#v", fetchRes.Docs)
+					}
+				})
+			}
+
+			// Test sorting if available
+			if td.withSort {
+				t.Run("Test_Fetch_Sort", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data with sort field in descending order
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo", TestSortAscField: 4},
+							{TestIDField: "d", TestAField: "qux", TestSortAscField: 1},
+							{TestIDField: "b", TestAField: "bar", TestSortAscField: 3},
+							{TestIDField: "c", TestAField: "baz", TestSortAscField: 2},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					// Fetch should return records sorted by TestSortAscField in ascending order
+					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+					if fetchRes.Err != nil {
+						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+					}
+
+					// Verify ascending order
+					if len(fetchRes.Docs) != 4 {
+						t.Fatalf("❌ expected 4 docs, got %d", len(fetchRes.Docs))
+					}
+
+					for i, doc := range fetchRes.Docs {
+						expectedSort := i + 1
+						if doc[TestSortAscField].(int32) != int32(expectedSort) {
+							t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
+						}
+					}
+				})
+			}
 
 			fmt.Print("\n---------------------------------------------------------------------------------\n\n")
 		})
