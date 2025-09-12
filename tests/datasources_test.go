@@ -17,12 +17,18 @@ import (
 type TestDatasource struct {
 	id     string
 	source datasources.Datasource
+
+	withFilter bool // Datasource supports filtering
+	withSort   bool // Datasource supports sorting
 }
 
 const (
 	TestIDField string = "id"
 	TestAField  string = "fieldA"
 	TestBField  string = "fieldB"
+
+	TestFilterOutField string = "filterOut"
+	TestSortAscField   string = "sortAsc"
 )
 
 // --------
@@ -63,16 +69,22 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 
 		id = "mongo-datasource"
 		out <- TestDatasource{
-			id: id,
+			id:         id,
+			withFilter: true,
+			withSort:   true,
 			source: datasources.NewMongoDatasource(
 				ctx,
 				datasources.MongoDatasourceConfigs{
 					URI:            mongoURI,
 					DatabaseName:   mongoDB,
 					CollectionName: getDsName(id),
-					Filter:         map[string]any{},
-					Sort:           map[string]any{},
 					AccurateCount:  true,
+					Filter: map[string]any{
+						TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
+					},
+					Sort: map[string]any{
+						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+					},
 					WithTransformer: func(data map[string]any) (map[string]any, error) {
 						data[datasources.MongoIDField] = data[TestIDField]
 						return data, nil
@@ -176,7 +188,9 @@ func TestDatasourceImplementations(t *testing.T) {
 
 				// 7) Verify update applied
 				fetchRes3 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"a"}})
-				if fetchRes3.Docs[0][TestAField] != "fooood" {
+				if len(fetchRes3.Docs) == 0 {
+					t.Errorf("❌ did not expect empty docs after update")
+				} else if fetchRes3.Docs[0][TestAField] != "fooood" {
 					t.Errorf("❌ expected %s='fooood', got %v", TestAField, fetchRes3.Docs[0][TestAField])
 				}
 
@@ -284,6 +298,9 @@ func TestDatasourceImplementations(t *testing.T) {
 				// Wait for all operations to complete
 				wg.Wait()
 				close(resultCh)
+
+				// Wait a bit for all changes to propagate
+				<-time.After(time.Duration(500 * time.Millisecond))
 
 				// Check for errors
 				for err := range resultCh {
@@ -595,6 +612,73 @@ func TestDatasourceImplementations(t *testing.T) {
 					})
 				}
 			})
+
+			// Test filtering if available
+			if td.withFilter {
+				t.Run("Test_Fetch_Filter", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data with and without deletedAt field
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo", TestFilterOutField: true},
+							{TestIDField: "b", TestAField: "bar"},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					// Fetch should return only non-deleted records due to filter
+					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+					if fetchRes.Err != nil {
+						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+					}
+					if len(fetchRes.Docs) != 1 || fetchRes.Docs[0][TestIDField] != "b" {
+						t.Errorf("❌ expected single non-deleted doc with id 'b', got %#v", fetchRes.Docs)
+					}
+				})
+			}
+
+			// Test sorting if available
+			if td.withSort {
+				t.Run("Test_Fetch_Sort", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data with sort field in descending order
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo", TestSortAscField: 4},
+							{TestIDField: "d", TestAField: "qux", TestSortAscField: 1},
+							{TestIDField: "b", TestAField: "bar", TestSortAscField: 3},
+							{TestIDField: "c", TestAField: "baz", TestSortAscField: 2},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					// Fetch should return records sorted by TestSortAscField in ascending order
+					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+					if fetchRes.Err != nil {
+						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+					}
+
+					// Verify ascending order
+					if len(fetchRes.Docs) != 4 {
+						t.Fatalf("❌ expected 4 docs, got %d", len(fetchRes.Docs))
+					}
+
+					for i, doc := range fetchRes.Docs {
+						expectedSort := i + 1
+						if doc[TestSortAscField].(int32) != int32(expectedSort) {
+							t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
+						}
+					}
+				})
+			}
 
 			fmt.Print("\n---------------------------------------------------------------------------------\n\n")
 		})

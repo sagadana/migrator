@@ -289,26 +289,30 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 	watcher := make(chan DatasourcePushRequest)
 
+	const StreamOpTypeField = "operationType"
+	const StreamDocKeyField = "documentKey"
+	const StreamFullDocField = "fullDocument"
+
 	// Convert mongo stream event to Datasource Push Request
 	processEvent := func(event map[string]any) DatasourcePushRequest {
 		inserts, updates, deletes := []map[string]any{}, map[string]map[string]any{}, []string{}
-		opType := event["operationType"].(string)
+		opType := event[StreamOpTypeField].(string)
 
 		switch opType {
 		case "insert":
-			doc, ok := event["fullDocument"].(map[string]any)
+			doc, ok := event[StreamFullDocField].(map[string]any)
 			if !ok {
 				break
 			}
 			inserts = append(inserts, doc)
 
 		case "update":
-			docKey, ok := event["documentKey"].(map[string]any)
+			docKey, ok := event[StreamDocKeyField].(map[string]any)
 			if !ok {
 				break
 			}
 
-			doc, ok := event["fullDocument"].(map[string]any)
+			doc, ok := event[StreamFullDocField].(map[string]any)
 			if !ok {
 				break
 			}
@@ -317,7 +321,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 			updates[id.(string)] = doc
 
 		case "delete":
-			docKey, ok := event["documentKey"].(map[string]any)
+			docKey, ok := event[StreamDocKeyField].(map[string]any)
 			if !ok {
 				break
 			}
@@ -350,20 +354,34 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 			SetMaxAwaitTime(time.Duration(batchWindow) * time.Second)
 
 		// Watch all changes for insert, update, delete
-		pipeline := mongo.Pipeline{
-			bson.D{{
-				Key: "$match",
-				Value: bson.D{{
-					Key: "operationType",
+		matchFilter := bson.E{
+			Key: "$match",
+			Value: bson.D{
+				{
+					Key: StreamOpTypeField,
 					Value: bson.D{{
 						Key:   "$in",
 						Value: bson.A{"insert", "update", "delete"},
 					}},
-				}},
-			}},
+				},
+			},
+		}
+
+		// Add filter conditions if ds.filter is not empty
+		if len(ds.filter) > 0 {
+			for key, value := range ds.filter {
+				filterKey := fmt.Sprintf("%s.%s", StreamFullDocField, key)
+				matchFilter.Value = append(matchFilter.Value.(bson.D), bson.E{
+					Key:   filterKey,
+					Value: value,
+				})
+			}
 		}
 
 		// Start the change stream
+		pipeline := mongo.Pipeline{{
+			matchFilter,
+		}}
 		stream, err := collection.Watch(bgCtx, pipeline, streamOpts)
 		if err != nil {
 			panic(fmt.Errorf("mongodb watch error: '%s", err.Error()))
