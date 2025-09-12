@@ -14,7 +14,7 @@ import (
 	"github.com/sagadana/migrator/helpers"
 	"github.com/sagadana/migrator/pipelines"
 	"github.com/sagadana/migrator/states"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 const IDField = "Index"

@@ -144,6 +144,9 @@ func TestStateStoreLifecycle(t *testing.T) {
 		t.Run(st.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
+			t.Cleanup(func() {
+				st.store.Close(&testCtx)
+			})
 			t.Parallel() // Run states tests in parallel
 
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)

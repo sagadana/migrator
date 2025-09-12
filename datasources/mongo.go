@@ -6,9 +6,9 @@ import (
 	"maps"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const MongoIDField = "_id"
@@ -46,6 +46,32 @@ type MongoDatasource struct {
 	onInit     func(client *mongo.Client) error
 }
 
+// ConvertBSON converts a BSON value to a generic any value
+func ConvertBSON(val any) any {
+	switch v := val.(type) {
+	case bson.D:
+		m := make(map[string]any)
+		for _, e := range v {
+			m[e.Key] = ConvertBSON(e.Value)
+		}
+		return m
+	case bson.A:
+		a := make([]any, len(v))
+		for i, e := range v {
+			a[i] = ConvertBSON(e)
+		}
+		return a
+	case bson.M:
+		m := make(map[string]any)
+		for k, e := range v {
+			m[k] = ConvertBSON(e)
+		}
+		return m
+	default:
+		return v
+	}
+}
+
 // Connect to MongoDB
 func ConnectToMongoDB(ctx *context.Context, config MongoDatasourceConfigs) *mongo.Client {
 
@@ -58,10 +84,17 @@ func ConnectToMongoDB(ctx *context.Context, config MongoDatasourceConfigs) *mong
 		return client
 	}
 
-	clientOptions := options.Client().ApplyURI(config.URI)
-	clientOptions.SetConnectTimeout(10 * time.Second)
+	bsonOpts := &options.BSONOptions{
+		UseJSONStructTags: true,
+		NilSliceAsEmpty:   true,
+		OmitEmpty:         true,
+	}
+	clientOptions := options.Client().
+		ApplyURI(config.URI).
+		SetConnectTimeout(10 * time.Second).
+		SetBSONOptions(bsonOpts)
 
-	client, err := mongo.Connect(*ctx, clientOptions)
+	client, err := mongo.Connect(clientOptions)
 	if err != nil {
 		panic(err)
 	}
@@ -139,8 +172,7 @@ func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchR
 		if c := len(request.IDs); c > 0 {
 			total = uint64(c)
 		} else {
-			countOption := options.EstimatedDocumentCountOptions{}
-			count, err := collection.EstimatedDocumentCount(*ctx, &countOption)
+			count, err := collection.EstimatedDocumentCount(*ctx)
 			if err != nil || count == 0 {
 				return 0
 			}
@@ -269,10 +301,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 	}
 
 	if len(docs) > 0 {
-		ordered := true
-		result, err := collection.BulkWrite(*ctx, docs, &options.BulkWriteOptions{
-			Ordered: &ordered,
-		})
+		result, err := collection.BulkWrite(*ctx, docs, options.BulkWrite().SetOrdered(true))
 		if err != nil {
 			return count, fmt.Errorf("mongodb bulk write error: %w", err)
 		}
@@ -300,19 +329,19 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 
 		switch opType {
 		case "insert":
-			doc, ok := event[StreamFullDocField].(map[string]any)
+			doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
 			if !ok {
 				break
 			}
 			inserts = append(inserts, doc)
 
 		case "update":
-			docKey, ok := event[StreamDocKeyField].(map[string]any)
+			docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
 			if !ok {
 				break
 			}
 
-			doc, ok := event[StreamFullDocField].(map[string]any)
+			doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
 			if !ok {
 				break
 			}
@@ -321,7 +350,7 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 			updates[id.(string)] = doc
 
 		case "delete":
-			docKey, ok := event[StreamDocKeyField].(map[string]any)
+			docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
 			if !ok {
 				break
 			}
@@ -341,17 +370,14 @@ func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStream
 	go func(bgCtx context.Context) {
 		defer close(watcher)
 
-		batchSize := max(request.BatchSize, 1)
-		batchWindow := max(request.BatchWindowSeconds, 1)
-
 		// Options for the change stream.
 		// MaxAwaitTime tells the server how long to wait for new data before returning an empty batch.
 		// This helps prevent the stream.Next() call from blocking indefinitely and allows our time window to function.
 		// We set it to our batch window duration for alignment.
 		streamOpts := options.ChangeStream().
 			SetFullDocument(options.UpdateLookup).
-			SetBatchSize(int32(batchSize)).
-			SetMaxAwaitTime(time.Duration(batchWindow) * time.Second)
+			SetBatchSize(int32(max(request.BatchSize, 1))).
+			SetMaxAwaitTime(time.Duration(max(request.BatchWindowSeconds, 1)) * time.Second)
 
 		// Watch all changes for insert, update, delete
 		matchFilter := bson.E{
@@ -418,4 +444,9 @@ func (ds *MongoDatasource) Clear(ctx *context.Context) error {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 	_, err := collection.DeleteMany(*ctx, bson.D{})
 	return err
+}
+
+// Close data source
+func (ds *MongoDatasource) Close(ctx *context.Context) error {
+	return ds.client.Disconnect(*ctx)
 }
