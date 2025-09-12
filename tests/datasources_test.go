@@ -11,15 +11,16 @@ import (
 
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type TestDatasource struct {
 	id     string
 	source datasources.Datasource
 
-	withFilter bool // Datasource supports filtering
-	withSort   bool // Datasource supports sorting
+	withFilter      bool // Datasource supports filtering
+	withWatchFilter bool // Datasource supports watch filtering
+	withSort        bool // Datasource supports sorting
 }
 
 const (
@@ -69,9 +70,10 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 
 		id = "mongo-datasource"
 		out <- TestDatasource{
-			id:         id,
-			withFilter: true,
-			withSort:   true,
+			id:              id,
+			withFilter:      true,
+			withWatchFilter: true,
+			withSort:        true,
 			source: datasources.NewMongoDatasource(
 				ctx,
 				datasources.MongoDatasourceConfigs{
@@ -118,6 +120,9 @@ func TestDatasourceImplementations(t *testing.T) {
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
+			t.Cleanup(func() {
+				td.source.Close(&testCtx)
+			})
 			t.Parallel() // Run datasources tests in parallel
 
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
@@ -338,7 +343,12 @@ func TestDatasourceImplementations(t *testing.T) {
 						}
 						// Update previous 1
 						if i > 0 {
-							r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i-1): {TestBField: fmt.Sprintf("%s-%d", random, i-1)}}
+							// Last one contains filter out field - if filter supported
+							if td.withWatchFilter && i == evCnt-1 {
+								r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i): {TestFilterOutField: "yes"}}
+							} else {
+								r.Updates = map[string]map[string]any{fmt.Sprintf("w%d", i-1): {TestBField: fmt.Sprintf("%s-%d", random, i-1)}}
+							}
 						}
 						// Delete previous 2
 						if i > 1 {
@@ -393,16 +403,17 @@ func TestDatasourceImplementations(t *testing.T) {
 				// Wait for background pushes to complete
 				rWg.Wait()
 
-				if gotInsert < expInsert {
-					t.Errorf("❌ watch inserts: expected >=%d, got %d", expInsert, gotInsert)
+				if gotInsert != expInsert {
+					t.Errorf("❌ watch inserts: expected %d, got %d", expInsert, gotInsert)
 				}
-				if gotUpdate < expUpdate {
-					t.Errorf("❌ watch updates: expected >=%d, got %d", expUpdate, gotUpdate)
+				if td.withWatchFilter && gotUpdate != expUpdate-1 { // Expexts 1 less if filter enabled
+					t.Errorf("❌ watch updates: expecte %d, got %d", expUpdate-1, gotUpdate)
+				} else if !td.withWatchFilter && gotUpdate != expUpdate {
+					t.Errorf("❌ watch updates: expected %d, got %d", expUpdate, gotUpdate)
 				}
-				if gotDelete < expDelete {
-					t.Errorf("❌ watch deletes: expected >=%d, got %d", expDelete, gotDelete)
+				if gotDelete != expDelete {
+					t.Errorf("❌ watch deletes: expected %d, got %d", expDelete, gotDelete)
 				}
-
 			})
 
 			t.Run("Test_Fetch", func(t *testing.T) {

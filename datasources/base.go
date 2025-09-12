@@ -2,12 +2,17 @@ package datasources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"time"
 
 	"github.com/sagadana/migrator/helpers"
+)
+
+var (
+	ErrDatastoreClosed = errors.New("datasource closed")
 )
 
 type DatasourcePushRequest struct {
@@ -51,6 +56,15 @@ type DatasourceStreamResult struct {
 }
 type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
+type RedisDatasourceSchema struct {
+	Strings    map[string]string
+	Lists      [][]string
+	Sets       map[string][]string
+	Hashes     map[string]map[string]string
+	SortedSets map[string][]map[string]float64
+}
+type RedisDatasourceTransformer func(data map[string]any) (RedisDatasourceSchema, error)
+
 type Datasource interface {
 	// Get total count of items based on the provided request.
 	// Note: The count should reflect the given 'Size' and number of 'IDs'
@@ -63,6 +77,8 @@ type Datasource interface {
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
 	// Clear data source
 	Clear(ctx *context.Context) error
+	// Close data source
+	Close(ctx *context.Context) error
 }
 
 // Load CSV data into datasource

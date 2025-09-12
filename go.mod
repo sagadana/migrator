@@ -5,21 +5,20 @@ go 1.23.8
 toolchain go1.24.5
 
 require (
-	github.com/go-redis/redis/v8 v8.11.5
-	go.mongodb.org/mongo-driver v1.17.4
-)
-
-require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 )
 
 require (
-	github.com/cespare/xxhash/v2 v2.1.2 // indirect
+	github.com/redis/go-redis/v9 v9.14.0
+	go.mongodb.org/mongo-driver/v2 v2.3.0
+)
+
+require (
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
