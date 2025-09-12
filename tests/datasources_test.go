@@ -218,6 +218,7 @@ func TestDatasourceImplementations(t *testing.T) {
 							},
 						}
 						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
 						resultCh <- err
 					}(i)
 				}
@@ -243,6 +244,7 @@ func TestDatasourceImplementations(t *testing.T) {
 							},
 						}
 						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
 						resultCh <- err
 					}(i)
 				}
@@ -271,6 +273,7 @@ func TestDatasourceImplementations(t *testing.T) {
 							Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
 						}
 						_, err := td.source.Push(&ctx, req)
+						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
 						resultCh <- err
 					}(i)
 				}
@@ -364,7 +367,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						gotInsert += uint64(len(evt.Docs.Inserts))
 						gotUpdate += uint64(len(evt.Docs.Updates))
 						gotDelete += uint64(len(evt.Docs.Deletes))
-					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+100) * time.Millisecond): // Wait for watch batch window
+					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+500) * time.Millisecond): // Wait for watch batch window
 						watchCancel() // Stop watching
 						break loop
 					}

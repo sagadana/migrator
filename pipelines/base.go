@@ -35,11 +35,11 @@ type PipelineConfig struct {
 
 	OnMigrationStart    func(state states.State)
 	OnMigrationProgress func(state states.State, count datasources.DatasourcePushCount)
-	OnMigrationError    func(state states.State, err error)
+	OnMigrationError    func(state states.State, data datasources.DatasourcePushRequest, err error)
 	OnMigrationStopped  func(state states.State)
 
 	OnReplicationStart    func(state states.State)
-	OnReplicationError    func(state states.State, err error)
+	OnReplicationError    func(state states.State, data datasources.DatasourcePushRequest, err error)
 	OnReplicationProgress func(state states.State, count datasources.DatasourcePushCount)
 	OnReplicationStopped  func(state states.State)
 }
@@ -154,8 +154,9 @@ func (p *Pipeline) GetState(ctx *context.Context) (states.State, bool) {
 // -------------------
 
 type CallbackResult = struct {
-	Count *datasources.DatasourcePushCount
-	Err   error
+	Count    *datasources.DatasourcePushCount
+	Failures *datasources.DatasourcePushRequest
+	Err      error
 }
 
 // Process migration
@@ -199,6 +200,9 @@ func (p *Pipeline) migrate(
 					callbackChan <- CallbackResult{
 						Count: nil,
 						Err:   fmt.Errorf("transform error: %w", err),
+						Failures: &datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{doc},
+						},
 					}
 					continue
 				}
@@ -212,6 +216,9 @@ func (p *Pipeline) migrate(
 					callbackChan <- CallbackResult{
 						Count: nil,
 						Err:   fmt.Errorf("transform error: %w", err),
+						Failures: &datasources.DatasourcePushRequest{
+							Updates: map[string]map[string]any{id: doc},
+						},
 					}
 					continue
 				}
@@ -222,8 +229,9 @@ func (p *Pipeline) migrate(
 			count, err := p.To.Push(ctx, request)
 			if err != nil {
 				callbackChan <- CallbackResult{
-					Count: nil,
-					Err:   fmt.Errorf("migration error: %w", err),
+					Count:    nil,
+					Err:      fmt.Errorf("migration error: %w", err),
+					Failures: request,
 				}
 				continue
 			}
@@ -241,8 +249,9 @@ func (p *Pipeline) migrate(
 			count, err := p.To.Push(ctx, &data)
 			if err != nil {
 				callbackChan <- CallbackResult{
-					Count: nil,
-					Err:   fmt.Errorf("migration error: %w", err),
+					Count:    nil,
+					Err:      fmt.Errorf("migration error: %w", err),
+					Failures: &data,
 				}
 				continue
 			}
@@ -335,7 +344,7 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 	// Replicate changes
 	p.replicate(ctx, config, func(result CallbackResult) {
 		if result.Err != nil && config.OnReplicationError != nil {
-			config.OnReplicationError(state, result.Err)
+			config.OnReplicationError(state, *result.Failures, result.Err)
 		} else if result.Count != nil && config.OnReplicationProgress != nil {
 			config.OnReplicationProgress(state, *result.Count)
 		}
@@ -455,7 +464,11 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 			input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
 				if data.Err != nil {
 					if config.OnMigrationError != nil {
-						go config.OnMigrationError(state, fmt.Errorf("fetch error (%s): %w", p.ID, data.Err))
+						go config.OnMigrationError(
+							state,
+							datasources.DatasourcePushRequest{Inserts: data.Docs},
+							fmt.Errorf("fetch error (%s): %w", p.ID, data.Err),
+						)
 					}
 				}
 				return datasources.DatasourcePushRequest{Inserts: data.Docs}
@@ -477,7 +490,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 
 					slog.Error(fmt.Sprintf("Migration Error: %s", result.Err.Error()))
 					if config.OnMigrationError != nil {
-						defer config.OnMigrationError(state, result.Err)
+						defer config.OnMigrationError(state, *result.Failures, result.Err)
 					}
 				} else if result.Count != nil {
 					state.MigrationOffset = json.Number(strconv.FormatUint(uint64(previousOffset)+result.Count.Inserts, 10))

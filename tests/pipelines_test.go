@@ -239,7 +239,7 @@ func testMigration(
 		}
 	}
 
-	config.OnMigrationError = func(state states.State, err error) {
+	config.OnMigrationError = func(state states.State, data datasources.DatasourcePushRequest, err error) {
 		if state.MigrationIssue == "" || state.MigrationIssue != err.Error() {
 			t.Errorf("❌ expects 'MigrationIssue' to be populated OnMigrationError")
 		}
@@ -477,7 +477,7 @@ func testReplication(
 
 	var err error
 
-	config.OnReplicationError = func(state states.State, err error) {
+	config.OnReplicationError = func(state states.State, data datasources.DatasourcePushRequest, err error) {
 		if state.ReplicationIssue == "" || state.ReplicationIssue != err.Error() {
 			t.Errorf("❌ expects 'ReplicationIssue' to be populated OnReplicationError")
 		}
