@@ -14,9 +14,11 @@ import (
 type MemoryDatasource struct {
 	name string
 
-	ids     []string
-	idField string
-	data    *sync.Map
+	idField  string
+	isClosed bool
+
+	ids  []string
+	data *sync.Map
 
 	watcher       chan DatasourcePushRequest
 	watcherActive bool
@@ -39,14 +41,19 @@ func clone[T any](src map[string]T) map[string]T {
 	return dst
 }
 
-func (m *MemoryDatasource) getId(data map[string]any) (val string, err error) {
+func (m *MemoryDatasource) getID(data map[string]any) (val string, err error) {
 	id, ok := data[m.idField]
 	if ok {
 		return fmt.Sprintf("%v", id), err
 	}
 	return val, fmt.Errorf("missing '%s' in insert document", m.idField)
 }
+
 func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) uint64 {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	// 1. Determine the raw “total” matching items
 	var total uint64
 	if len(request.IDs) > 0 {
@@ -76,6 +83,10 @@ func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchReq
 	return remaining
 }
 func (m *MemoryDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	// 1. Build base slice of IDs to page through
 	var baseIDs []string
 	if len(request.IDs) > 0 {
@@ -138,9 +149,13 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 
 	count := *new(DatasourcePushCount)
 
+	if m.isClosed {
+		return count, ErrDatastoreClosed
+	}
+
 	// Inserts
 	for _, doc := range request.Inserts {
-		id, err := m.getId(doc)
+		id, err := m.getID(doc)
 		if err != nil {
 			return count, err
 		}
@@ -190,6 +205,10 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 }
 
 func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	m.watcherActive = true
 	return StreamChanges(
 		ctx,
@@ -200,6 +219,18 @@ func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStream
 }
 
 func (m *MemoryDatasource) Clear(_ *context.Context) error {
+	if m.isClosed {
+		return ErrDatastoreClosed
+	}
+
 	m.data.Clear()
+	m.ids = make([]string, 0)
+	return nil
+}
+
+func (m *MemoryDatasource) Close(ctx *context.Context) error {
+	m.data = new(sync.Map)
+	m.ids = make([]string, 0)
+	m.isClosed = true
 	return nil
 }

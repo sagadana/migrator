@@ -6,14 +6,15 @@ import (
 )
 
 type MemoryStore[K comparable, V any] struct {
-	m        sync.Map
+	m *sync.Map
+
 	isClosed bool
 }
 
 // Sets the value for a key.
 func (ms *MemoryStore[K, V]) Store(ctx *context.Context, key K, value V) error {
 	if ms.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	ms.m.Store(key, value)
@@ -37,14 +38,14 @@ func (ms *MemoryStore[K, V]) Load(ctx *context.Context, key K) (value V, ok bool
 // Deletes the value for a key.
 func (ms *MemoryStore[K, V]) Delete(ctx *context.Context, key K) error {
 	if ms.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	ms.m.Delete(key)
 	return nil
 }
 
-// Deletes the value for a key.
+// Close store.
 func (ms *MemoryStore[K, V]) Close(ctx *context.Context) error {
 	ms.isClosed = true
 	return nil
@@ -53,7 +54,7 @@ func (ms *MemoryStore[K, V]) Close(ctx *context.Context) error {
 // Clear all values
 func (ms *MemoryStore[K, V]) Clear(ctx *context.Context) error {
 	if ms.isClosed {
-		return ErrClosed
+		return ErrStoreClosed
 	}
 
 	ms.m.Range(func(key, val any) bool {
@@ -63,7 +64,14 @@ func (ms *MemoryStore[K, V]) Clear(ctx *context.Context) error {
 	return nil
 }
 
-// Creates and returns a new state store.
+// Creates and returns a new generic memory store.
+func NewMemoryStore[V any]() *MemoryStore[string, V] {
+	return &MemoryStore[string, V]{
+		m: new(sync.Map),
+	}
+}
+
+// Creates and returns a new memory state store.
 func NewMemoryStateStore() *MemoryStore[string, State] {
-	return &MemoryStore[string, State]{}
+	return NewMemoryStore[State]()
 }
