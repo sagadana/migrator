@@ -3,8 +3,7 @@
 [![release](https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/release.yml)
 [![CodeQL](https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg)](https://github.com/sagadana/migrator/actions/workflows/codeql.yml)
 
-High-performant, easy-to-use data replication tool. Replicate data from any source to any
-destination with ease.
+High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
 
 ## Features
 
