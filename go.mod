@@ -2,7 +2,7 @@ module github.com/sagadana/migrator
 
 go 1.23.8
 
-toolchain go1.24.5
+toolchain go1.25.1
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
