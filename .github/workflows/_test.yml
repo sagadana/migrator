@@ -13,9 +13,9 @@ jobs:
         uses: hoverkraft-tech/compose-action@v2.3.0
         with:
           compose-file: ./docker-compose.yml
-          compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--exit-code-from tester-helper"
-          services: "tester-helper"
+          compose-flags: '--env-file ./tests/.env.dev'
+          up-flags: '--exit-code-from tester-helper'
+          services: 'tester-helper'
 
   states:
     runs-on: ubuntu-latest
@@ -27,9 +27,9 @@ jobs:
         uses: hoverkraft-tech/compose-action@v2.3.0
         with:
           compose-file: ./docker-compose.yml
-          compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--exit-code-from tester-state"
-          services: "tester-state"
+          compose-flags: '--env-file ./tests/.env.dev'
+          up-flags: '--exit-code-from tester-state'
+          services: 'tester-state'
 
   datasources:
     runs-on: ubuntu-latest
@@ -41,9 +41,9 @@ jobs:
         uses: hoverkraft-tech/compose-action@v2.3.0
         with:
           compose-file: ./docker-compose.yml
-          compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--exit-code-from tester-ds"
-          services: "tester-ds"
+          compose-flags: '--env-file ./tests/.env.dev'
+          up-flags: '--exit-code-from tester-ds'
+          services: 'tester-ds'
 
   pipelines:
     runs-on: ubuntu-latest
@@ -55,6 +55,6 @@ jobs:
         uses: hoverkraft-tech/compose-action@v2.3.0
         with:
           compose-file: ./docker-compose.yml
-          compose-flags: "--env-file ./tests/.env.dev"
-          up-flags: "--exit-code-from tester-pipe"
-          services: "tester-pipe"
+          compose-flags: '--env-file ./tests/.env.dev'
+          up-flags: '--exit-code-from tester-pipe'
+          services: 'tester-pipe'

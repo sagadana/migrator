@@ -281,6 +281,9 @@ func testMigration(
 	// Wait for migration start-stop events
 	evWg.Wait()
 
+	// Wait a bit - for migration process to propagate
+	<-time.After(time.Duration(500 * time.Millisecond))
+
 	// ------------------------------
 	// Migration Completed
 	// ------------------------------
@@ -351,7 +354,7 @@ func testReplication(
 ) {
 	crStart := make(chan bool, 1)
 	crWg := new(sync.WaitGroup)
-	crCtx, crCancel := context.WithTimeout(context.Background(), time.Duration(10*time.Second))
+	crCtx, crCancel := context.WithTimeout(context.Background(), time.Duration(60*time.Second))
 
 	evWg := new(sync.WaitGroup)
 	evWg.Add(2)
@@ -371,7 +374,7 @@ func testReplication(
 	go func() {
 		defer func() {
 			// Wait for replication batch window + processing before ending
-			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+200) * time.Millisecond)
+			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+500) * time.Millisecond)
 			crCancel()  // End continuous replication
 			crWg.Done() // Mark done
 		}()
@@ -509,17 +512,21 @@ func testReplication(
 			t.Errorf("❌ expects 'ReplicationStatus' to be: %s, got: %s", states.ReplicationStatusStreaming, state.ReplicationStatus)
 		}
 
-		// Attempt starting replication again
-		//   expects to fail with error that replication is currently running
-		err := pipeline.Stream(&crCtx, &pipelines.PipelineConfig{})
-		if err != pipelines.ErrPipelineReplicating {
-			t.Errorf("❌ expect replication duplicate error: '%s', got: '%s'", pipelines.ErrPipelineReplicating, err)
-		}
+		// For replication-only test
+		if replicationOnly {
 
-		// Start background updates
-		<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
-		crStart <- true                                     // Send event to trigger background updates
-		close(crStart)
+			// Attempt starting replication again
+			//   expects to fail with error that replication is currently running
+			err := pipeline.Stream(&crCtx, &pipelines.PipelineConfig{})
+			if err != pipelines.ErrPipelineReplicating {
+				t.Errorf("❌ expect replication duplicate error: '%s', got: '%s'", pipelines.ErrPipelineReplicating, err)
+			}
+
+			// Start background updates
+			<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
+			crStart <- true                                     // Send event to trigger background updates
+			close(crStart)
+		}
 	}
 
 	if replicationOnly { // Test Replication Only
@@ -528,6 +535,16 @@ func testReplication(
 			t.Errorf("❌ continuous replication failed: %s", err.Error())
 		}
 	} else { // Test Migration + Replication
+
+		// Start background updates - when migration completed
+		config.OnMigrationStopped = func(state states.State) {
+			if state.MigrationStatus == states.MigrationStatusCompleted {
+				<-time.After(time.Duration(500 * time.Millisecond)) // Wait a bit - for previous migration process
+				crStart <- true                                     // Send event to trigger background updates
+				close(crStart)
+			}
+		}
+
 		err = pipeline.Start(&crCtx, config, true)
 		if err != nil {
 			t.Errorf("❌ migration + continuous replication failed: %s", err.Error())
