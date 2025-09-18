@@ -4,10 +4,10 @@
  <span>
   <img src="https://img.shields.io/github/v/release/sagadana/migrator?display_name=tag&sort=semver&logo=github&style=flat-square&label=version" alt="Release%20by%20tag" />
   <img src="https://img.shields.io/github/release-date/sagadana/migrator?display_name=tag&sort=semver&logo=github&style=flat-square&label=date" alt="Release%20by%20date" />
-  <img src="https://goreportcard.com/badge/github.com/sagadana/migrator" alt="Report" />
-  <img src="https://app.codacy.com/project/badge/Grade/d1b34caebf6e489da2da791249f38d73" alt="Code%20Quality" />
-  <img src="https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" />
-  <img src="https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg" alt="Tests" />
+  <a href="https://goreportcard.com/report/github.com/sagadana/migrator"><img src="https://goreportcard.com/badge/github.com/sagadana/migrator" alt="Report" /></a>
+  <a href="https://app.codacy.com/gh/sagadana/migrator/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade"><img src="https://app.codacy.com/project/badge/Grade/d1b34caebf6e489da2da791249f38d73" alt="Code%20Quality" /></a>
+  <a href="https://github.com/sagadana/migrator/actions/workflows/codeql.yml"><img src="https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" /></a>
+  <a href="https://github.com/sagadana/migrator/actions/workflows/release.yml"><img src="https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg" alt="Tests" /></a>
  </span>
 </div>
 
