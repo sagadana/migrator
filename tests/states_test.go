@@ -144,9 +144,6 @@ func TestStateStoreLifecycle(t *testing.T) {
 		t.Run(st.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
-			t.Cleanup(func() {
-				st.store.Close(&testCtx)
-			})
 			t.Parallel() // Run states tests in parallel
 
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
@@ -154,7 +151,8 @@ func TestStateStoreLifecycle(t *testing.T) {
 
 			// Cleanup after
 			t.Cleanup(func() {
-				st.store.Clear(&ctx)
+				st.store.Clear(&testCtx)
+				st.store.Close(&testCtx)
 			})
 
 			// 1) Loading a missing key should return ok=false

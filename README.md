@@ -27,13 +27,13 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Datasources
 
-| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                 |
-| ---------- | ------- | ------------------ | -------------------------------------- |
-| `Memory`   | ✅      | R/W                | ✅                                     |
-| `MongoDB`  | ✅      | R/W                | ✅ (_with replica set / cluster mode_) |
-| `Redis`    | WIP     | TBC                | TBC                                    |
-| `Postgres` | Planned | TBC                | TBC                                    |
-| `<More>`   | Soon    | TBC                | TBC                                    |
+| Datasource | Status  | Read | Write | Migration | Continuous Replication  |
+| ---------- | ------- | ---- | ----- | --------- | ----------------------- |
+| `Memory`   | ✅      | ✅   | ✅    | ✅        | ✅                      |
+| `MongoDB`  | ✅      | ✅   | ✅    | ✅        | ✅ (_with replica set_) |
+| `Redis`    | ✅      | ✅   | ✅    | ✅        | ✅                      |
+| `Postgres` | Planned | TBC  | TBC   | TBC       | TBC                     |
+| `<More>`   | Soon    | TBC  | TBC   | TBC       | TBC                     |
 
 ## State Stores
 
@@ -162,7 +162,15 @@ func main() {
 
 ```
 
-## Test Packages
+## Linting
+
+Run this to catch lint issues
+
+```sh
+ docker compose --env-file ./tests/.env.dev  up lint
+```
+
+## Testing
 
 ### Test States
 

@@ -7,7 +7,9 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg
+      "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
     networks:
       - dev-network
     env_file:
@@ -21,7 +23,9 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg
+      "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
     networks:
       - dev-network
     env_file:
@@ -39,7 +43,9 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg
+      "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
     networks:
       - dev-network
     env_file:
@@ -57,7 +63,20 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg
+      "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+
+  lint:
+    image: golangci/golangci-lint:latest
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: golangci-lint run
     networks:
       - dev-network
     env_file:
@@ -68,7 +87,7 @@ services:
   # ---------------------
 
   redis:
-    image: "redis:latest"
+    image: 'redis:latest'
     restart: always
     expose:
       - 6379
@@ -91,7 +110,7 @@ services:
 
   # MongoDb Primary Replica
   mongo-a:
-    image: "mongo:latest"
+    image: 'mongo:latest'
     restart: always
     expose:
       - 27017
@@ -108,8 +127,7 @@ services:
       - ./tests/mongo/replica.key:/data/replica.key
     healthcheck:
       test: >
-        mongosh --host localhost --quiet --eval 
-        "try { rs.status().ok } catch (e) { 0 }"
+        mongosh --host localhost --quiet --eval  "try { rs.status().ok } catch (e) { 0 }"
       interval: 10s
       timeout: 5s
       retries: 3
@@ -122,7 +140,7 @@ services:
         exec docker-entrypoint.sh $$@
     command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
   mongo-b:
-    image: "mongo:latest"
+    image: 'mongo:latest'
     restart: always
     expose:
       - 27017
@@ -137,8 +155,7 @@ services:
       - ./tests/mongo/replica.key:/data/replica.key
     healthcheck:
       test: >
-        mongosh --host localhost --quiet --eval 
-        "try { rs.status().ok } catch (e) { 0 }"
+        mongosh --host localhost --quiet --eval  "try { rs.status().ok } catch (e) { 0 }"
       interval: 10s
       timeout: 5s
       retries: 3
@@ -152,8 +169,8 @@ services:
     command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
   # MongoDb Replica-Set Initializer
   mongo-init:
-    image: "mongo:latest"
-    restart: "no"
+    image: 'mongo:latest'
+    restart: 'no'
     depends_on:
       - mongo-a
       - mongo-b

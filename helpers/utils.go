@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -239,4 +240,60 @@ func GetTempBasePath(id string) string {
 		}
 	}
 	return filepath.Join(basePath, id)
+}
+
+func Flatten(prefix string, src any, dest map[string]any) {
+	if len(prefix) > 0 && !strings.HasSuffix(prefix, ".") {
+		prefix += "."
+	}
+	switch parent := src.(type) {
+	case map[string]any:
+		for k, child := range parent {
+			switch gChild := child.(type) {
+			case map[string]any, []any:
+				Flatten(fmt.Sprintf("%s%s", prefix, k), gChild, dest)
+			default:
+				dest[fmt.Sprintf("%s%s", prefix, k)] = gChild
+			}
+		}
+	case []any:
+		for i, child := range parent {
+			switch gChild := child.(type) {
+			case map[string]any, []any:
+				Flatten(fmt.Sprintf("%s%d", prefix, i), gChild, dest)
+			default:
+				dest[fmt.Sprintf("%s%d", prefix, i)] = gChild
+			}
+		}
+	default:
+		dest[prefix] = parent
+	}
+}
+
+func Slice[T any](items []T, offset, limit uint64) (sliced []T, start, end uint64) {
+	total := uint64(len(items))
+
+	// 1. If offset beyond available entries, or empty items, return empty result
+	if offset >= total || total == 0 {
+		return sliced, 0, 0
+	}
+
+	// 2. Compute start index
+	start = offset
+
+	// 3. Compute end index (exclusive)
+	if limit == 0 {
+		// no cap: go until the end
+		end = total
+	} else {
+		end = min(start+limit, total)
+	}
+
+	// 4. Slice out the window
+	sliced = items[start:end]
+	if len(sliced) == 0 {
+		return sliced, 0, 0
+	}
+
+	return sliced, start, end
 }

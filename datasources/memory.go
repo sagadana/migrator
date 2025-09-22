@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"sync"
+
+	"github.com/sagadana/migrator/helpers"
 )
 
 // -------------------------------------------------------------------------------
@@ -82,62 +84,39 @@ func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchReq
 	// 4. Otherwise, everything remaining counts
 	return remaining
 }
+
 func (m *MemoryDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
 	if m.isClosed {
 		panic(ErrDatastoreClosed)
 	}
 
 	// 1. Build base slice of IDs to page through
-	var baseIDs []string
+	var keys []string
 	if len(request.IDs) > 0 {
-		baseIDs = make([]string, 0, len(request.IDs))
-		for _, id := range request.IDs {
+		var id string
+		keys = make([]string, 0, len(request.IDs))
+		for _, id = range request.IDs {
 			if _, exists := m.data.Load(id); exists {
-				baseIDs = append(baseIDs, id)
+				keys = append(keys, id)
 			}
 		}
 	} else {
-		baseIDs = m.ids
+		keys = m.ids
 	}
 
-	total := uint64(len(baseIDs))
-	var start, end uint64
+	// 2. Slice and clone documents
+	ids, start, end := helpers.Slice(keys, request.Offset, request.Size)
 
-	// 2. If offset beyond available entries, return empty result
-	if request.Offset >= total || total == 0 {
-		return DatasourceFetchResult{
-			Docs:  make([]map[string]any, 0),
-			Start: 0,
-			End:   0,
-		}
-	}
-
-	// 3. Compute start index
-	start = request.Offset
-
-	// 4. Determine page size (zero means “no cap”)
-	var pageSize uint64
-	if request.Size == 0 {
-		pageSize = total
-	} else {
-		pageSize = request.Size
-	}
-
-	// 5. Compute exclusive end index, then inclusive end
-	endExcl := min(start+pageSize, total)
-	end = endExcl - 1
-
-	// 6. Slice and clone documents
-	ids := baseIDs[start:endExcl]
+	// 3. Fetch actual documents by key
+	var id string
 	docs := make([]map[string]any, 0, len(ids))
-	for _, id := range ids {
+	for _, id = range ids {
 		if raw, ok := m.data.Load(id); ok {
 			if doc, ok := raw.(map[string]any); ok {
 				docs = append(docs, clone(doc))
 			}
 		}
 	}
-
 	return DatasourceFetchResult{
 		Docs:  docs,
 		Start: start,
@@ -148,38 +127,67 @@ func (m *MemoryDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error) {
 
 	count := *new(DatasourcePushCount)
+	event := &DatasourcePushRequest{
+		Inserts: []map[string]any{},
+		Updates: []map[string]any{},
+		Deletes: []string{},
+	}
+
+	var pushErr error
+	var doc map[string]any
+	var id string
 
 	if m.isClosed {
 		return count, ErrDatastoreClosed
 	}
 
 	// Inserts
-	for _, doc := range request.Inserts {
+	for _, doc = range request.Inserts {
+		if doc == nil {
+			continue
+		}
+
 		id, err := m.getID(doc)
 		if err != nil {
-			return count, err
+			pushErr = fmt.Errorf("memory item id error: %w", err)
+			continue
 		}
+
 		m.data.Store(id, clone(doc))
 		count.Inserts++
+		event.Inserts = append(event.Inserts, clone(doc))
 	}
 
 	// Updates
-	for id, fields := range request.Updates {
+	for _, doc = range request.Updates {
+		if doc == nil {
+			continue
+		}
+
+		id, err := m.getID(doc)
+		if err != nil {
+			pushErr = fmt.Errorf("memory item id error: %w", err)
+			continue
+		}
+
 		if existingAny, ok := m.data.Load(id); ok {
 			if existing, ok := existingAny.(map[string]any); ok {
-				maps.Copy(existing, fields)
+				maps.Copy(existing, doc)
 				m.data.Store(id, existing)
 			}
 		} else {
-			m.data.Store(id, fields)
+			m.data.Store(id, doc)
 		}
+
 		count.Updates++
+		event.Updates = append(event.Updates, clone(doc))
 	}
 
 	// Deletes
-	for _, id := range request.Deletes {
+	for _, id = range request.Deletes {
 		m.data.Delete(id)
 		count.Deletes++
+		event.Deletes = append(event.Deletes, id)
 	}
 
 	// Regenerate ids on inserts & deletes
@@ -196,12 +204,12 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 
 	// Notify watchers
 	if m.watcherActive && m.watcher != nil {
-		go func(r DatasourcePushRequest) {
-			m.watcher <- r
-		}(*request)
+		go func(e DatasourcePushRequest) {
+			m.watcher <- e
+		}(*event)
 	}
 
-	return count, nil
+	return count, pushErr
 }
 
 func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
@@ -232,5 +240,6 @@ func (m *MemoryDatasource) Close(ctx *context.Context) error {
 	m.data = new(sync.Map)
 	m.ids = make([]string, 0)
 	m.isClosed = true
+	m.watcherActive = false
 	return nil
 }
