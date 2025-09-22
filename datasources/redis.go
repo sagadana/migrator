@@ -25,7 +25,7 @@ const (
 	RedisDsList   RedisDsType = "list"
 	RedisDsSet    RedisDsType = "set"
 	RedisDsHash   RedisDsType = "hash"
-	RedisDsJson   RedisDsType = "rejson-rl"
+	RedisDsJSON   RedisDsType = "rejson-rl"
 	RedisDsZSet   RedisDsType = "zset"
 )
 
@@ -40,7 +40,7 @@ type RedisInputSchema struct {
 	List      []any
 	Set       []string
 	Hash      map[string]string
-	Json      map[string]any
+	JSON      map[string]any
 	SortedSet []map[string]float64
 }
 
@@ -59,7 +59,7 @@ type RedisOutputSetSchema struct {
 	Members []string `json:"members"`
 }
 type RedisOutputHashSchema map[string]string
-type RedisOutputJsonSchema map[string]any
+type RedisOutputJSONSchema map[string]any
 type RedisSortedSetSchema struct {
 	Value string      `json:"value"`
 	Score json.Number `json:"score"`
@@ -170,12 +170,12 @@ func NewRedisDatasource(ctx *context.Context, config RedisDatasourceConfigs) *Re
 	return ds
 }
 
-// RedisOutputSchemaToJson converts Redis output schema to JSON
-func RedisOutputSchemaToJson[V RedisOutputStringSchema |
+// RedisOutputSchemaToJSON converts Redis output schema to JSON
+func RedisOutputSchemaToJSON[V RedisOutputStringSchema |
 	RedisOutputListSchema |
 	RedisOutputSetSchema |
 	RedisOutputHashSchema |
-	RedisOutputJsonSchema |
+	RedisOutputJSONSchema |
 	RedisOutputSortedSetSchema](
 	schema V,
 ) map[string]any {
@@ -194,16 +194,16 @@ func RedisOutputSchemaToJson[V RedisOutputStringSchema |
 	return data
 }
 
-// JsonToRedisJsonInputSchema converts JSON to Redis input schema (using ReJSON)
-func JsonToRedisJsonInputSchema(data map[string]any) RedisInputSchema {
+// JSONToRedisJSONInputSchema converts JSON to Redis input schema (using ReJSON)
+func JSONToRedisJSONInputSchema(data map[string]any) RedisInputSchema {
 	schema := RedisInputSchema{
-		Json: data,
+		JSON: data,
 	}
 	return schema
 }
 
-// JsonToRedisHashInputSchema converts JSON to Redis input schema (using Redis Hash)
-func JsonToRedisHashInputSchema(data map[string]any) RedisInputSchema {
+// JSONToRedisHashInputSchema converts JSON to Redis input schema (using Redis Hash)
+func JSONToRedisHashInputSchema(data map[string]any) RedisInputSchema {
 	hash := make(map[string]string)
 	for k, v := range data {
 		hash[k] = fmt.Sprintf("%v", v)
@@ -252,9 +252,9 @@ func (ds *RedisDatasource) processUpsert(ctx *context.Context, pipe redis.Pipeli
 		pipe.HMSet(*ctx, key, schema.Hash)
 	}
 
-	// Process Json
-	if len(schema.Json) > 0 {
-		b, err := json.Marshal(schema.Json)
+	// Process JSON
+	if len(schema.JSON) > 0 {
+		b, err := json.Marshal(schema.JSON)
 		if err == nil {
 			pipe.JSONMerge(*ctx, key, "$", string(b))
 		}
@@ -299,7 +299,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 			pipe.SMembers(*ctx, key)
 		case RedisDsHash:
 			pipe.HGetAll(*ctx, key)
-		case RedisDsJson:
+		case RedisDsJSON:
 			pipe.JSONGet(*ctx, key)
 		case RedisDsZSet:
 			pipe.ZRangeWithScores(*ctx, key, 0, -1)
@@ -329,7 +329,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 		switch RedisDsType(strings.ToLower(dataType)) {
 		case RedisDsString:
 			if val, err := cmd.(*redis.StringCmd).Result(); err == nil {
-				doc = RedisOutputSchemaToJson(RedisOutputStringSchema{
+				doc = RedisOutputSchemaToJSON(RedisOutputStringSchema{
 					Key:   key,
 					Value: val,
 				})
@@ -337,7 +337,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 
 		case RedisDsList:
 			if vals, err := cmd.(*redis.StringSliceCmd).Result(); err == nil {
-				doc = RedisOutputSchemaToJson(RedisOutputListSchema{
+				doc = RedisOutputSchemaToJSON(RedisOutputListSchema{
 					Key:     key,
 					Members: vals,
 				})
@@ -345,7 +345,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 
 		case RedisDsSet:
 			if vals, err := cmd.(*redis.StringSliceCmd).Result(); err == nil {
-				doc = RedisOutputSchemaToJson(RedisOutputSetSchema{
+				doc = RedisOutputSchemaToJSON(RedisOutputSetSchema{
 					Key:     key,
 					Members: vals,
 				})
@@ -353,14 +353,14 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 
 		case RedisDsHash:
 			if vals, err := cmd.(*redis.MapStringStringCmd).Result(); err == nil {
-				doc = RedisOutputSchemaToJson(RedisOutputHashSchema(vals))
+				doc = RedisOutputSchemaToJSON(RedisOutputHashSchema(vals))
 			}
 
-		case RedisDsJson:
+		case RedisDsJSON:
 			if val, err := cmd.(*redis.JSONCmd).Result(); err == nil {
 				var jsonData map[string]any
 				if err := json.Unmarshal([]byte(val), &jsonData); err == nil {
-					doc = RedisOutputSchemaToJson(RedisOutputJsonSchema(jsonData))
+					doc = RedisOutputSchemaToJSON(RedisOutputJSONSchema(jsonData))
 				}
 			}
 
@@ -373,7 +373,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 						Score: json.Number(fmt.Sprint(z.Score)),
 					}
 				}
-				doc = RedisOutputSchemaToJson(RedisOutputSortedSetSchema{
+				doc = RedisOutputSchemaToJSON(RedisOutputSortedSetSchema{
 					Key:     key,
 					Members: members,
 				})
@@ -546,7 +546,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				continue
 			}
 		} else {
-			schema = JsonToRedisHashInputSchema(item) // Default: Hash data structure
+			schema = JSONToRedisHashInputSchema(item) // Default: Hash data structure
 		}
 
 		ds.processUpsert(ctx, pipe, ds.getKey(id), schema)
@@ -575,7 +575,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				continue
 			}
 		} else {
-			schema = JsonToRedisHashInputSchema(item) // Default: Hash data structure
+			schema = JSONToRedisHashInputSchema(item) // Default: Hash data structure
 		}
 
 		ds.processUpsert(ctx, pipe, ds.getKey(id), schema)

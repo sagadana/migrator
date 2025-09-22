@@ -71,6 +71,17 @@ services:
     env_file:
       - ./tests/.env.dev
 
+  lint:
+    image: golangci/golangci-lint:latest
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: golangci-lint run
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+
   # ---------------------
   # Redis
   # ---------------------

@@ -345,12 +345,14 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 	p.replicate(ctx, config, func(result CallbackResult) {
 		if result.Err != nil {
 			err := fmt.Errorf("replication error (%s): %w", p.ID, result.Err)
-
 			state.ReplicationIssue = err.Error()
-			defer p.SetState(ctx, state)
 
 			if config.OnReplicationError != nil {
 				config.OnReplicationError(state, *result.Failures, err)
+			}
+
+			if err := p.SetState(ctx, state); err != nil {
+				slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
 			}
 		} else if result.Count != nil && config.OnReplicationProgress != nil {
 			config.OnReplicationProgress(state, *result.Count)
@@ -474,9 +476,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 			input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
 				if data.Err != nil {
 					err := fmt.Errorf("migration fetch error (%s): %w", p.ID, data.Err)
-
 					state.MigrationIssue = err.Error()
-					defer p.SetState(ctx, state)
 
 					if config.OnMigrationError != nil {
 						go config.OnMigrationError(
@@ -484,6 +484,10 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 							datasources.DatasourcePushRequest{Inserts: data.Docs},
 							err,
 						)
+					}
+
+					if err := p.SetState(ctx, state); err != nil {
+						slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
 					}
 				}
 				return datasources.DatasourcePushRequest{Inserts: data.Docs}

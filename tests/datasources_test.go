@@ -152,7 +152,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					IDField:   TestIDField,
 					ScanSize:  10,
 					WithTransformer: func(data map[string]any) (datasources.RedisInputSchema, error) {
-						return datasources.JsonToRedisJsonInputSchema(data), nil
+						return datasources.JSONToRedisJSONInputSchema(data), nil
 					},
 					OnInit: func(client *redis.Client) error {
 						return nil

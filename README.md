@@ -162,7 +162,15 @@ func main() {
 
 ```
 
-## Test Packages
+## Linting
+
+Run this to catch lint issues
+
+```sh
+ docker compose --env-file ./tests/.env.dev  up lint
+```
+
+## Testing
 
 ### Test States
 
