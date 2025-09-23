@@ -49,7 +49,6 @@ type MongoDatasource struct {
 	accurateCount bool
 
 	trasformer DatasourceTransformer
-	onInit     func(client *mongo.Client) error
 }
 
 // ConvertBSON converts a BSON value to a generic any value
@@ -144,12 +143,11 @@ func NewMongoDatasource(ctx *context.Context,
 		accurateCount: config.AccurateCount,
 
 		trasformer: config.WithTransformer,
-		onInit:     config.OnInit,
 	}
 
 	// Initialize data source
-	if ds.onInit != nil {
-		if err := ds.onInit(ds.client); err != nil {
+	if config.OnInit != nil {
+		if err := config.OnInit(ds.client); err != nil {
 			panic(err)
 		}
 	}

@@ -100,7 +100,6 @@ type RedisDatasource struct {
 	scanSize  uint64
 
 	transformer RedisDatasourceTransformer
-	onInit      func(client *redis.Client) error
 
 	keys       []string
 	keyMap     map[string]uint64
@@ -157,12 +156,11 @@ func NewRedisDatasource(ctx *context.Context, config RedisDatasourceConfigs) *Re
 		keysMu: new(sync.Mutex),
 
 		transformer: config.WithTransformer,
-		onInit:      config.OnInit,
 	}
 
 	// Initialize data source
-	if ds.onInit != nil {
-		if err := ds.onInit(ds.client); err != nil {
+	if config.OnInit != nil {
+		if err := config.OnInit(ds.client); err != nil {
 			panic(err)
 		}
 	}
