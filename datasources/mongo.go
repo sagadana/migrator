@@ -48,7 +48,7 @@ type MongoDatasource struct {
 	// Use accurate counting instead of estimated count (slower)
 	accurateCount bool
 
-	trasformer DatasourceTransformer
+	transformer DatasourceTransformer
 }
 
 // ConvertBSON converts a BSON value to a generic any value
@@ -142,7 +142,7 @@ func NewMongoDatasource(ctx *context.Context,
 		sort:          mongoSort,
 		accurateCount: config.AccurateCount,
 
-		trasformer: config.WithTransformer,
+		transformer: config.WithTransformer,
 	}
 
 	// Initialize data source
@@ -269,14 +269,15 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 	// Insert
 	if len(request.Inserts) > 0 {
-		for _, item := range request.Inserts {
+		var item map[string]any
+		for _, item = range request.Inserts {
 			if item == nil {
 				continue
 			}
 
 			// Transform
-			if ds.trasformer != nil {
-				trans, err := ds.trasformer(item)
+			if ds.transformer != nil {
+				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb insert transformer error: %w", err)
 					continue
@@ -290,14 +291,15 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 	// Update
 	if len(request.Updates) > 0 {
-		for _, item := range request.Updates {
+		var item map[string]any
+		for _, item = range request.Updates {
 			if item == nil {
 				continue
 			}
 
 			// Transform
-			if ds.trasformer != nil {
-				trans, err := ds.trasformer(item)
+			if ds.transformer != nil {
+				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb update transformer error: %w", err)
 					continue

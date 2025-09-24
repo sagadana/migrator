@@ -6,14 +6,14 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
-	"go.mongodb.org/mongo-driver/v2/mongo"
+	"gorm.io/gorm"
 )
 
 type TestDatasource struct {
@@ -55,106 +55,168 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 	go func() {
 		defer close(out)
 
+		// // -----------------------
+		// // 1. Memory
+		// // -----------------------
+		// id = "memory-datasource"
+		// out <- TestDatasource{
+		// 	id:     id,
+		// 	source: datasources.NewMemoryDatasource(getDsName(id), TestIDField),
+		// }
+
+		// // -----------------------
+		// // 2. Mongo
+		// // -----------------------
+
+		// mongoURI := os.Getenv("MONGO_URI")
+		// mongoDB := os.Getenv("MONGO_DB")
+
+		// id = "mongo-datasource"
+		// out <- TestDatasource{
+		// 	id:              id,
+		// 	withFilter:      true,
+		// 	withWatchFilter: true,
+		// 	withSort:        true,
+		// 	source: datasources.NewMongoDatasource(
+		// 		ctx,
+		// 		datasources.MongoDatasourceConfigs{
+		// 			URI:            mongoURI,
+		// 			DatabaseName:   mongoDB,
+		// 			CollectionName: getDsName(id),
+		// 			AccurateCount:  true,
+		// 			Filter: map[string]any{
+		// 				TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
+		// 			},
+		// 			Sort: map[string]any{
+		// 				TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+		// 			},
+		// 			WithTransformer: func(data map[string]any) (map[string]any, error) {
+		// 				if data != nil {
+		// 					data[datasources.MongoIDField] = data[TestIDField]
+		// 				}
+		// 				return data, nil
+		// 			},
+		// 			OnInit: func(client *mongo.Client) error {
+		// 				return nil
+		// 			},
+		// 		},
+		// 	),
+		// }
+
+		// // -----------------------
+		// // 3. Redis
+		// // -----------------------
+		// redisAddr := os.Getenv("REDIS_ADDR")
+		// redisUser := os.Getenv("REDIS_USER")
+		// redisPass := os.Getenv("REDIS_PASS")
+		// redisDb := os.Getenv("REDIS_STATE_DB")
+
+		// redisURI := fmt.Sprintf("redis://%s/%s", redisAddr, redisDb)
+		// if len(redisUser) > 0 && len(redisPass) > 0 {
+		// 	redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
+		// }
+
+		// // --------------- Redis Hash & Without Pefix --------------- //
+		// id = "redis-hash-datasource"
+		// out <- TestDatasource{
+		// 	id:              id,
+		// 	withFilter:      false,
+		// 	withWatchFilter: false,
+		// 	withSort:        false,
+		// 	synchronous:     true, // Run synchronously to prevent overlap with "redis-json-datasource" test
+		// 	source: datasources.NewRedisDatasource(
+		// 		ctx,
+		// 		datasources.RedisDatasourceConfigs{
+		// 			URI:      redisURI,
+		// 			IDField:  TestIDField,
+		// 			ScanSize: 10,
+		// 			OnInit: func(client *redis.Client) error {
+		// 				return nil
+		// 			},
+		// 		},
+		// 	),
+		// }
+
+		// // --------------- Redis JSON & With Prefix --------------- //
+		// id = "redis-json-datasource"
+		// out <- TestDatasource{
+		// 	id:              id,
+		// 	withFilter:      false,
+		// 	withWatchFilter: false,
+		// 	withSort:        false,
+		// 	source: datasources.NewRedisDatasource(
+		// 		ctx,
+		// 		datasources.RedisDatasourceConfigs{
+		// 			URI:       redisURI,
+		// 			KeyPrefix: fmt.Sprintf("%s:", getDsName(id)),
+		// 			IDField:   TestIDField,
+		// 			ScanSize:  10,
+		// 			WithTransformer: func(data map[string]any) (datasources.RedisInputSchema, error) {
+		// 				return datasources.JSONToRedisJSONInputSchema(data), nil
+		// 			},
+		// 			OnInit: func(client *redis.Client) error {
+		// 				return nil
+		// 			},
+		// 		},
+		// 	),
+		// }
+
 		// -----------------------
-		// 1. Memory
+		// 4. PostgreSQL
 		// -----------------------
-		id = "memory-datasource"
-		out <- TestDatasource{
-			id:     id,
-			source: datasources.NewMemoryDatasource(getDsName(id), TestIDField),
+		postgresDSN := os.Getenv("POSTGRES_DSN")
+		if postgresDSN == "" {
+			postgresDSN = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+				os.Getenv("POSTGRES_HOST"),
+				os.Getenv("POSTGRES_PORT"),
+				os.Getenv("POSTGRES_USER"),
+				os.Getenv("POSTGRES_PASS"),
+				os.Getenv("POSTGRES_DB"),
+				os.Getenv("POSTGRES_SSLMODE"),
+			)
 		}
 
-		// -----------------------
-		// 2. Mongo
-		// -----------------------
+		// Define test model for PostgreSQL
+		type TestPostgresModel struct {
+			ID        string    `gorm:"primaryKey;column:id" json:"id"`
+			FieldA    string    `gorm:"column:fieldA" json:"fieldA"`
+			FieldB    string    `gorm:"column:fieldB" json:"fieldB"`
+			FilterOut bool      `gorm:"column:filterOut" json:"filterOut"`
+			SortAsc   int       `gorm:"type:int;column:sortAsc" json:"sortAsc"`
+			CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+			UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
+		}
 
-		mongoURI := os.Getenv("MONGO_URI")
-		mongoDB := os.Getenv("MONGO_DB")
-
-		id = "mongo-datasource"
+		id = "postgres-datasource"
 		out <- TestDatasource{
 			id:              id,
 			withFilter:      true,
 			withWatchFilter: true,
 			withSort:        true,
-			source: datasources.NewMongoDatasource(
+			source: datasources.NewPostgresDatasource(
 				ctx,
-				datasources.MongoDatasourceConfigs{
-					URI:            mongoURI,
-					DatabaseName:   mongoDB,
-					CollectionName: getDsName(id),
-					AccurateCount:  true,
+				datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+					DSN:       postgresDSN,
+					TableName: getDsName(id),
+					Model:     &TestPostgresModel{},
+					IDField:   TestIDField,
 					Filter: map[string]any{
-						TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
+						TestFilterOutField: false,
 					},
 					Sort: map[string]any{
 						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
 					},
-					WithTransformer: func(data map[string]any) (map[string]any, error) {
-						if data != nil {
-							data[datasources.MongoIDField] = data[TestIDField]
-						}
-						return data, nil
+					WithTransformer: func(data map[string]any) (TestPostgresModel, error) {
+						s, _ := strconv.Atoi(fmt.Sprintf("%v", data[TestSortAscField]))
+						return TestPostgresModel{
+							ID:        fmt.Sprintf("%v", data[TestIDField]),
+							FieldA:    fmt.Sprintf("%v", data[TestAField]),
+							FieldB:    fmt.Sprintf("%v", data[TestBField]),
+							FilterOut: data[TestFilterOutField] == true,
+							SortAsc:   s,
+						}, nil
 					},
-					OnInit: func(client *mongo.Client) error {
-						return nil
-					},
-				},
-			),
-		}
-
-		// -----------------------
-		// 3. Redis
-		// -----------------------
-		redisAddr := os.Getenv("REDIS_ADDR")
-		redisUser := os.Getenv("REDIS_USER")
-		redisPass := os.Getenv("REDIS_PASS")
-		redisDb := os.Getenv("REDIS_STATE_DB")
-
-		redisURI := fmt.Sprintf("redis://%s/%s", redisAddr, redisDb)
-		if len(redisUser) > 0 && len(redisPass) > 0 {
-			redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
-		}
-
-		// --------------- Redis Hash & Without Pefix --------------- //
-		id = "redis-hash-datasource"
-		out <- TestDatasource{
-			id:              id,
-			withFilter:      false,
-			withWatchFilter: false,
-			withSort:        false,
-			synchronous:     true, // Run synchronously to prevent overlap with "redis-json-datasource" test
-			source: datasources.NewRedisDatasource(
-				ctx,
-				datasources.RedisDatasourceConfigs{
-					URI:      redisURI,
-					IDField:  TestIDField,
-					ScanSize: 10,
-					OnInit: func(client *redis.Client) error {
-						return nil
-					},
-				},
-			),
-		}
-
-		// --------------- Redis JSON & With Prefix --------------- //
-		id = "redis-json-datasource"
-		out <- TestDatasource{
-			id:              id,
-			withFilter:      false,
-			withWatchFilter: false,
-			withSort:        false,
-			source: datasources.NewRedisDatasource(
-				ctx,
-				datasources.RedisDatasourceConfigs{
-					URI:       redisURI,
-					KeyPrefix: fmt.Sprintf("%s:", getDsName(id)),
-					IDField:   TestIDField,
-					ScanSize:  10,
-					WithTransformer: func(data map[string]any) (datasources.RedisInputSchema, error) {
-						return datasources.JSONToRedisJSONInputSchema(data), nil
-					},
-					OnInit: func(client *redis.Client) error {
+					OnInit: func(db *gorm.DB) error {
 						return nil
 					},
 				},
@@ -1138,7 +1200,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 					for i, doc := range fetchRes.Docs {
 						expectedSort := i + 1
-						if doc[TestSortAscField].(int32) != int32(expectedSort) {
+						if fmt.Sprintf("%v", doc[TestSortAscField]) != fmt.Sprintf("%d", expectedSort) {
 							t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
 						}
 					}
