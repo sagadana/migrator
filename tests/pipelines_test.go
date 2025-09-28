@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -142,7 +143,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		mongoTransformer := func(data map[string]any) (map[string]any, error) {
 			// Use to transform to include default mongo ID
 			if data != nil {
-				data[datasources.MongoIDField] = data[IDField]
+				data[datasources.MongoDefaultIDField] = data[IDField]
 			}
 			return data, nil
 		}
@@ -682,7 +683,7 @@ func TestPipelineImplementations(t *testing.T) {
 	testCtx := context.Background()
 
 	instanceId := helpers.RandomString(6)
-	logger := helpers.CreateTextLogger()
+	logger := helpers.CreateTextLogger(slog.LevelDebug)
 
 	for tp := range getTestPipelines(&testCtx, instanceId) {
 

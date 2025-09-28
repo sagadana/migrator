@@ -7,12 +7,15 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"gorm.io/gorm"
 )
 
@@ -55,111 +58,111 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 	go func() {
 		defer close(out)
 
-		// // -----------------------
-		// // 1. Memory
-		// // -----------------------
-		// id = "memory-datasource"
-		// out <- TestDatasource{
-		// 	id:     id,
-		// 	source: datasources.NewMemoryDatasource(getDsName(id), TestIDField),
-		// }
+		// -----------------------
+		// 1. Memory
+		// -----------------------
+		id = "memory-datasource"
+		out <- TestDatasource{
+			id:     id,
+			source: datasources.NewMemoryDatasource(getDsName(id), TestIDField),
+		}
 
-		// // -----------------------
-		// // 2. Mongo
-		// // -----------------------
+		// -----------------------
+		// 2. Mongo
+		// -----------------------
 
-		// mongoURI := os.Getenv("MONGO_URI")
-		// mongoDB := os.Getenv("MONGO_DB")
+		mongoURI := os.Getenv("MONGO_URI")
+		mongoDB := os.Getenv("MONGO_DB")
 
-		// id = "mongo-datasource"
-		// out <- TestDatasource{
-		// 	id:              id,
-		// 	withFilter:      true,
-		// 	withWatchFilter: true,
-		// 	withSort:        true,
-		// 	source: datasources.NewMongoDatasource(
-		// 		ctx,
-		// 		datasources.MongoDatasourceConfigs{
-		// 			URI:            mongoURI,
-		// 			DatabaseName:   mongoDB,
-		// 			CollectionName: getDsName(id),
-		// 			AccurateCount:  true,
-		// 			Filter: map[string]any{
-		// 				TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
-		// 			},
-		// 			Sort: map[string]any{
-		// 				TestSortAscField: 1, // 1 = Ascending, -1 = Descending
-		// 			},
-		// 			WithTransformer: func(data map[string]any) (map[string]any, error) {
-		// 				if data != nil {
-		// 					data[datasources.MongoIDField] = data[TestIDField]
-		// 				}
-		// 				return data, nil
-		// 			},
-		// 			OnInit: func(client *mongo.Client) error {
-		// 				return nil
-		// 			},
-		// 		},
-		// 	),
-		// }
+		id = "mongo-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      true,
+			withWatchFilter: true,
+			withSort:        true,
+			source: datasources.NewMongoDatasource(
+				ctx,
+				datasources.MongoDatasourceConfigs{
+					URI:            mongoURI,
+					DatabaseName:   mongoDB,
+					CollectionName: getDsName(id),
+					AccurateCount:  true,
+					Filter: map[string]any{
+						TestFilterOutField: map[string]any{"$in": []any{nil, false, ""}},
+					},
+					Sort: map[string]any{
+						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+					},
+					WithTransformer: func(data map[string]any) (map[string]any, error) {
+						if data != nil {
+							data[datasources.MongoDefaultIDField] = data[TestIDField]
+						}
+						return data, nil
+					},
+					OnInit: func(client *mongo.Client) error {
+						return nil
+					},
+				},
+			),
+		}
 
-		// // -----------------------
-		// // 3. Redis
-		// // -----------------------
-		// redisAddr := os.Getenv("REDIS_ADDR")
-		// redisUser := os.Getenv("REDIS_USER")
-		// redisPass := os.Getenv("REDIS_PASS")
-		// redisDb := os.Getenv("REDIS_STATE_DB")
+		// -----------------------
+		// 3. Redis
+		// -----------------------
+		redisAddr := os.Getenv("REDIS_ADDR")
+		redisUser := os.Getenv("REDIS_USER")
+		redisPass := os.Getenv("REDIS_PASS")
+		redisDb := os.Getenv("REDIS_STATE_DB")
 
-		// redisURI := fmt.Sprintf("redis://%s/%s", redisAddr, redisDb)
-		// if len(redisUser) > 0 && len(redisPass) > 0 {
-		// 	redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
-		// }
+		redisURI := fmt.Sprintf("redis://%s/%s", redisAddr, redisDb)
+		if len(redisUser) > 0 && len(redisPass) > 0 {
+			redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
+		}
 
-		// // --------------- Redis Hash & Without Pefix --------------- //
-		// id = "redis-hash-datasource"
-		// out <- TestDatasource{
-		// 	id:              id,
-		// 	withFilter:      false,
-		// 	withWatchFilter: false,
-		// 	withSort:        false,
-		// 	synchronous:     true, // Run synchronously to prevent overlap with "redis-json-datasource" test
-		// 	source: datasources.NewRedisDatasource(
-		// 		ctx,
-		// 		datasources.RedisDatasourceConfigs{
-		// 			URI:      redisURI,
-		// 			IDField:  TestIDField,
-		// 			ScanSize: 10,
-		// 			OnInit: func(client *redis.Client) error {
-		// 				return nil
-		// 			},
-		// 		},
-		// 	),
-		// }
+		// --------------- Redis Hash & Without Pefix --------------- //
+		id = "redis-hash-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			synchronous:     true, // Run synchronously to prevent overlap with "redis-json-datasource" test
+			source: datasources.NewRedisDatasource(
+				ctx,
+				datasources.RedisDatasourceConfigs{
+					URI:      redisURI,
+					IDField:  TestIDField,
+					ScanSize: 10,
+					OnInit: func(client *redis.Client) error {
+						return nil
+					},
+				},
+			),
+		}
 
-		// // --------------- Redis JSON & With Prefix --------------- //
-		// id = "redis-json-datasource"
-		// out <- TestDatasource{
-		// 	id:              id,
-		// 	withFilter:      false,
-		// 	withWatchFilter: false,
-		// 	withSort:        false,
-		// 	source: datasources.NewRedisDatasource(
-		// 		ctx,
-		// 		datasources.RedisDatasourceConfigs{
-		// 			URI:       redisURI,
-		// 			KeyPrefix: fmt.Sprintf("%s:", getDsName(id)),
-		// 			IDField:   TestIDField,
-		// 			ScanSize:  10,
-		// 			WithTransformer: func(data map[string]any) (datasources.RedisInputSchema, error) {
-		// 				return datasources.JSONToRedisJSONInputSchema(data), nil
-		// 			},
-		// 			OnInit: func(client *redis.Client) error {
-		// 				return nil
-		// 			},
-		// 		},
-		// 	),
-		// }
+		// --------------- Redis JSON & With Prefix --------------- //
+		id = "redis-json-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			source: datasources.NewRedisDatasource(
+				ctx,
+				datasources.RedisDatasourceConfigs{
+					URI:       redisURI,
+					KeyPrefix: fmt.Sprintf("%s:", getDsName(id)),
+					IDField:   TestIDField,
+					ScanSize:  10,
+					WithTransformer: func(data map[string]any) (datasources.RedisInputSchema, error) {
+						return datasources.JSONToRedisJSONInputSchema(data), nil
+					},
+					OnInit: func(client *redis.Client) error {
+						return nil
+					},
+				},
+			),
+		}
 
 		// -----------------------
 		// 4. PostgreSQL
@@ -191,7 +194,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 		out <- TestDatasource{
 			id:              id,
 			withFilter:      true,
-			withWatchFilter: true,
+			withWatchFilter: false,
 			withSort:        true,
 			source: datasources.NewPostgresDatasource(
 				ctx,
@@ -200,8 +203,9 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					TableName: getDsName(id),
 					Model:     &TestPostgresModel{},
 					IDField:   TestIDField,
-					Filter: map[string]any{
-						TestFilterOutField: false,
+					Filter: datasources.PostgresDatasourceFilter{
+						Query:  fmt.Sprintf("\"%s\" = ?", TestFilterOutField),
+						Params: []any{false},
 					},
 					Sort: map[string]any{
 						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
@@ -219,6 +223,10 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					OnInit: func(db *gorm.DB) error {
 						return nil
 					},
+
+					PublicationName:     strings.ReplaceAll(fmt.Sprintf("%s_pub", id), "-", "_"),
+					ReplicationSlotName: strings.ReplaceAll(fmt.Sprintf("%s_slot", id), "-", "_"),
+					DisableReplication:  false,
 				},
 			),
 		}
@@ -415,7 +423,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 	testCtx := context.Background()
 
-	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
+	slog.SetDefault(helpers.CreateTextLogger(slog.LevelDebug)) // Default logger
 
 	instanceId := helpers.RandomString(6)
 

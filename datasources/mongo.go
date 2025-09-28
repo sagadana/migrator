@@ -11,7 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-const MongoIDField = "_id"
+const MongoDefaultIDField = "_id"
 
 type MongoDatasourceConfigs struct {
 	URI            string
@@ -129,7 +129,7 @@ func NewMongoDatasource(ctx *context.Context,
 
 	idField := config.IDField
 	if idField == "" {
-		idField = MongoIDField
+		idField = MongoDefaultIDField
 	}
 
 	ds := &MongoDatasource{
