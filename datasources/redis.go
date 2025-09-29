@@ -447,8 +447,7 @@ func (ds *RedisDatasource) Count(ctx *context.Context, request *DatasourceFetchR
 
 			err := ds.scanKeyPrefix(ctx, request.Offset, request.Size)
 			if err != nil {
-				slog.Error(fmt.Sprintf("failed to scan keys for '%s': %s", ds.getKey("*"), err))
-
+				slog.Error(fmt.Sprintf("failed to scan keys for '%s'", ds.getKey("*")), "error", err)
 				ds.keysMu.Unlock()
 				return total
 			}
