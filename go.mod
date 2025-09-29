@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/jackc/pglogrepl v0.0.0-20250509230407-a9884f6bd75a
-	github.com/jackc/pgx/v5 v5.6.0
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
 	github.com/redis/go-redis/v9 v9.14.0
 	go.mongodb.org/mongo-driver/v2 v2.3.0
