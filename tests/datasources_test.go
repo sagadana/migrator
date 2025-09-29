@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"gorm.io/gorm"
 )
 
 type TestDatasource struct {
@@ -92,7 +95,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					},
 					WithTransformer: func(data map[string]any) (map[string]any, error) {
 						if data != nil {
-							data[datasources.MongoIDField] = data[TestIDField]
+							data[datasources.MongoDefaultIDField] = data[TestIDField]
 						}
 						return data, nil
 					},
@@ -157,6 +160,107 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					OnInit: func(client *redis.Client) error {
 						return nil
 					},
+				},
+			),
+		}
+
+		// -----------------------
+		// 4. PostgreSQL
+		// -----------------------
+		postgresDSN := os.Getenv("POSTGRES_DSN")
+		if postgresDSN == "" {
+			postgresDSN = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+				os.Getenv("POSTGRES_HOST"),
+				os.Getenv("POSTGRES_PORT"),
+				os.Getenv("POSTGRES_USER"),
+				os.Getenv("POSTGRES_PASS"),
+				os.Getenv("POSTGRES_DB"),
+				os.Getenv("POSTGRES_SSLMODE"),
+			)
+		}
+
+		// ---------------------- Simple Model  -----------------------
+
+		// Define test model for PostgreSQL
+		type TestSimplePostgresModel struct {
+			ID     string `gorm:"primaryKey;column:id" json:"id"`
+			FieldA string `gorm:"column:fieldA" json:"fieldA"`
+		}
+
+		id = "postgres-simple-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			source: datasources.NewPostgresDatasource(
+				ctx,
+				datasources.PostgresDatasourceConfigs[TestSimplePostgresModel]{
+					DSN:       postgresDSN,
+					TableName: getDsName(id),
+					Model:     &TestSimplePostgresModel{},
+					IDField:   TestIDField,
+
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					DisableReplication: false,
+				},
+			),
+		}
+
+		// ---------------------- Complex Model -----------------------
+
+		// Define test model for PostgreSQL
+		type TestComplexPostgresModel struct {
+			ID        string    `gorm:"primaryKey;column:id" json:"id"`
+			FieldA    string    `gorm:"column:fieldA" json:"fieldA"`
+			FieldB    string    `gorm:"column:fieldB" json:"fieldB"`
+			FilterOut bool      `gorm:"column:filterOut" json:"filterOut"`
+			SortAsc   int       `gorm:"type:int;column:sortAsc" json:"sortAsc"`
+			CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+			UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
+		}
+
+		id = "postgres-complex-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      true,
+			withWatchFilter: false,
+			withSort:        true,
+			source: datasources.NewPostgresDatasource(
+				ctx,
+				datasources.PostgresDatasourceConfigs[TestComplexPostgresModel]{
+					DSN:       postgresDSN,
+					TableName: getDsName(id),
+					Model:     &TestComplexPostgresModel{},
+					IDField:   TestIDField,
+					Filter: datasources.PostgresDatasourceFilter{
+						Query:  fmt.Sprintf("\"%s\" = ?", TestFilterOutField),
+						Params: []any{false},
+					},
+					Sort: map[string]any{
+						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+					},
+
+					WithTransformer: func(data map[string]any) (TestComplexPostgresModel, error) {
+						s, _ := strconv.Atoi(fmt.Sprintf("%v", data[TestSortAscField]))
+						return TestComplexPostgresModel{
+							ID:        fmt.Sprintf("%v", data[TestIDField]),
+							FieldA:    fmt.Sprintf("%v", data[TestAField]),
+							FieldB:    fmt.Sprintf("%v", data[TestBField]),
+							FilterOut: data[TestFilterOutField] == true,
+							SortAsc:   s,
+						}, nil
+					},
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					PublicationName:     strings.ReplaceAll(fmt.Sprintf("%s_pub", id), "-", "_"),
+					ReplicationSlotName: strings.ReplaceAll(fmt.Sprintf("%s_slot", id), "-", "_"),
+					DisableReplication:  false,
 				},
 			),
 		}
@@ -353,7 +457,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 	testCtx := context.Background()
 
-	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
+	slog.SetDefault(helpers.CreateTextLogger(slog.LevelDebug)) // Default logger
 
 	instanceId := helpers.RandomString(6)
 
@@ -363,18 +467,18 @@ func TestDatasourceImplementations(t *testing.T) {
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
+			// Cleanup after
+			t.Cleanup(func() {
+				td.source.Clear(&testCtx)
+				td.source.Close(&testCtx)
+			})
+
 			if !td.synchronous {
 				t.Parallel() // Run datasources tests in parallel
 			}
 
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
 			defer cancel()
-
-			// Cleanup after
-			t.Cleanup(func() {
-				td.source.Clear(&testCtx)
-				td.source.Close(&testCtx)
-			})
 
 			t.Run("Test_CRUD", func(t *testing.T) {
 				td.source.Clear(&ctx)
@@ -388,7 +492,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				pushReq := &datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 					},
 				}
 				cnt, err := td.source.Push(&ctx, pushReq)
@@ -692,10 +796,10 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
-						{TestIDField: "c", TestAField: "bars", TestBField: 1234},
-						{TestIDField: "d", TestAField: "barss", TestBField: 1235},
-						{TestIDField: "e", TestAField: "barsss", TestBField: 1236},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+						{TestIDField: "c", TestAField: "bars", TestBField: "1234"},
+						{TestIDField: "d", TestAField: "barss", TestBField: "1235"},
+						{TestIDField: "e", TestAField: "barsss", TestBField: "1236"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
@@ -789,7 +893,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						req: &datasources.DatasourcePushRequest{
 							Inserts: []map[string]any{
 								{TestIDField: "a", TestAField: "foo"},
-								{TestIDField: "b", TestAField: "bar", TestBField: 123},
+								{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 							},
 						},
 						expect: struct {
@@ -938,10 +1042,10 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
-						{TestIDField: "c", TestAField: "baz", TestBField: 456},
-						{TestIDField: "d", TestAField: "qux", TestBField: 789},
-						{TestIDField: "e", TestAField: "quux", TestBField: 1011},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+						{TestIDField: "c", TestAField: "baz", TestBField: "456"},
+						{TestIDField: "d", TestAField: "qux", TestBField: "789"},
+						{TestIDField: "e", TestAField: "quux", TestBField: "1011"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
@@ -1061,7 +1165,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
@@ -1138,7 +1242,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 					for i, doc := range fetchRes.Docs {
 						expectedSort := i + 1
-						if doc[TestSortAscField].(int32) != int32(expectedSort) {
+						if fmt.Sprintf("%v", doc[TestSortAscField]) != fmt.Sprintf("%d", expectedSort) {
 							t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
 						}
 					}

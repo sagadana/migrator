@@ -344,15 +344,16 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 	// Replicate changes
 	p.replicate(ctx, config, func(result CallbackResult) {
 		if result.Err != nil {
-			err := fmt.Errorf("replication error (%s): %w", p.ID, result.Err)
-			state.ReplicationIssue = err.Error()
+			err := fmt.Errorf("replication pipeline (%s) error: %w", p.ID, result.Err)
+			slog.Error(err.Error())
 
+			state.ReplicationIssue = err.Error()
 			if config.OnReplicationError != nil {
 				config.OnReplicationError(state, *result.Failures, err)
 			}
 
 			if err := p.SetState(ctx, state); err != nil {
-				slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
+				slog.Error("unexpected migration error", "error", err)
 			}
 		} else if result.Count != nil && config.OnReplicationProgress != nil {
 			config.OnReplicationProgress(state, *result.Count)
@@ -487,7 +488,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 					}
 
 					if err := p.SetState(ctx, state); err != nil {
-						slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
+						slog.Error("unexpected migration error", "error", err)
 					}
 				}
 				return datasources.DatasourcePushRequest{Inserts: data.Docs}
@@ -505,11 +506,10 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 				// Track migration progress
 				state.MigrationStatus = states.MigrationStatusInProgress
 				if result.Err != nil {
-					err := fmt.Errorf("migration error (%s): %w", p.ID, result.Err)
+					err := fmt.Errorf("migration pipeline (%s) error: %w", p.ID, result.Err)
+					slog.Error(err.Error())
 
 					state.MigrationIssue = err.Error()
-
-					slog.Error(fmt.Sprintf("Migration Error: %s", err.Error()))
 					if config.OnMigrationError != nil {
 						defer config.OnMigrationError(state, *result.Failures, err)
 					}
@@ -524,7 +524,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 				}
 
 				if err := p.SetState(ctx, state); err != nil {
-					slog.Error(fmt.Sprintf("Unexpected Migration Error: %s", err.Error()))
+					slog.Error("unexpected migration error", "error", err)
 				}
 			})
 		})

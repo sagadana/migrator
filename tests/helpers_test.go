@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -372,9 +373,43 @@ func TestRandomString(t *testing.T) {
 func TestCreateTextLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := helpers.CreateTextLogger()
+	logger := helpers.CreateTextLogger(slog.LevelDebug)
 	if logger == nil {
 		t.Fatal("CreateTextLogger returned nil")
+	}
+	if logger.Handler() == nil {
+		t.Fatal("CreateTextLogger returned logger with nil handler")
+	}
+
+	ctx := context.Background()
+	// Test logging at different levels
+	if logger.Enabled(ctx, slog.LevelInfo) != true {
+		t.Error("Expected Info level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelDebug) != true {
+		t.Error("Expected Debug level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelWarn) != true {
+		t.Error("Expected Warn level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelError) != true {
+		t.Error("Expected Error level to be enabled")
+	}
+
+	// Create logger with higher level
+
+	logger = helpers.CreateTextLogger(slog.LevelError)
+	if logger.Enabled(ctx, slog.LevelInfo) != false {
+		t.Error("Expected Info level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelDebug) != false {
+		t.Error("Expected Debug level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelWarn) != false {
+		t.Error("Expected Warn level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelError) != true {
+		t.Error("Expected Error level to be enabled")
 	}
 }
 

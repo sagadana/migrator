@@ -136,7 +136,7 @@ func TestStateJSONRoundTrip(t *testing.T) {
 func TestStateStoreLifecycle(t *testing.T) {
 	testCtx := context.Background()
 
-	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
+	slog.SetDefault(helpers.CreateTextLogger(slog.LevelDebug)) // Default logger
 
 	for st := range getTestStates(&testCtx) {
 

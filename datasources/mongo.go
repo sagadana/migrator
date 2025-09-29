@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-const MongoIDField = "_id"
+const MongoDefaultIDField = "_id"
 
 type MongoDatasourceConfigs struct {
 	URI            string
@@ -48,8 +49,7 @@ type MongoDatasource struct {
 	// Use accurate counting instead of estimated count (slower)
 	accurateCount bool
 
-	trasformer DatasourceTransformer
-	onInit     func(client *mongo.Client) error
+	transformer DatasourceTransformer
 }
 
 // ConvertBSON converts a BSON value to a generic any value
@@ -130,7 +130,7 @@ func NewMongoDatasource(ctx *context.Context,
 
 	idField := config.IDField
 	if idField == "" {
-		idField = MongoIDField
+		idField = MongoDefaultIDField
 	}
 
 	ds := &MongoDatasource{
@@ -143,13 +143,12 @@ func NewMongoDatasource(ctx *context.Context,
 		sort:          mongoSort,
 		accurateCount: config.AccurateCount,
 
-		trasformer: config.WithTransformer,
-		onInit:     config.OnInit,
+		transformer: config.WithTransformer,
 	}
 
 	// Initialize data source
-	if ds.onInit != nil {
-		if err := ds.onInit(ds.client); err != nil {
+	if config.OnInit != nil {
+		if err := config.OnInit(ds.client); err != nil {
 			panic(err)
 		}
 	}
@@ -271,16 +270,18 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 	// Insert
 	if len(request.Inserts) > 0 {
-		for _, item := range request.Inserts {
+		var item map[string]any
+		for _, item = range request.Inserts {
 			if item == nil {
 				continue
 			}
 
 			// Transform
-			if ds.trasformer != nil {
-				trans, err := ds.trasformer(item)
+			if ds.transformer != nil {
+				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb insert transformer error: %w", err)
+					slog.Warn(pushErr.Error())
 					continue
 				}
 				item = trans
@@ -292,16 +293,18 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 	// Update
 	if len(request.Updates) > 0 {
-		for _, item := range request.Updates {
+		var item map[string]any
+		for _, item = range request.Updates {
 			if item == nil {
 				continue
 			}
 
 			// Transform
-			if ds.trasformer != nil {
-				trans, err := ds.trasformer(item)
+			if ds.transformer != nil {
+				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb update transformer error: %w", err)
+					slog.Warn(pushErr.Error())
 					continue
 				}
 				item = trans
@@ -311,6 +314,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			key, ok := item[ds.idField]
 			if !ok || key == nil {
 				pushErr = fmt.Errorf("mongodb update error: missing '%s' field", ds.idField)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 

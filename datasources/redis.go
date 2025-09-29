@@ -100,7 +100,6 @@ type RedisDatasource struct {
 	scanSize  uint64
 
 	transformer RedisDatasourceTransformer
-	onInit      func(client *redis.Client) error
 
 	keys       []string
 	keyMap     map[string]uint64
@@ -157,12 +156,11 @@ func NewRedisDatasource(ctx *context.Context, config RedisDatasourceConfigs) *Re
 		keysMu: new(sync.Mutex),
 
 		transformer: config.WithTransformer,
-		onInit:      config.OnInit,
 	}
 
 	// Initialize data source
-	if ds.onInit != nil {
-		if err := ds.onInit(ds.client); err != nil {
+	if config.OnInit != nil {
+		if err := config.OnInit(ds.client); err != nil {
 			panic(err)
 		}
 	}
@@ -449,8 +447,7 @@ func (ds *RedisDatasource) Count(ctx *context.Context, request *DatasourceFetchR
 
 			err := ds.scanKeyPrefix(ctx, request.Offset, request.Size)
 			if err != nil {
-				slog.Error(fmt.Sprintf("failed to scan keys for '%s': %s", ds.getKey("*"), err))
-
+				slog.Error(fmt.Sprintf("failed to scan keys for '%s'", ds.getKey("*")), "error", err)
 				ds.keysMu.Unlock()
 				return total
 			}
@@ -534,6 +531,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 		id, err := ds.getID(item)
 		if err != nil {
 			pushErr = fmt.Errorf("redis item id error: %w", err)
+			slog.Warn(pushErr.Error())
 			continue
 		}
 
@@ -543,6 +541,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			schema, err = ds.transformer(item)
 			if err != nil {
 				pushErr = fmt.Errorf("redis item transformer error: %w", err)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 		} else {
@@ -565,6 +564,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 		id, err := ds.getID(item)
 		if err != nil {
 			pushErr = fmt.Errorf("redis item id error: %w", err)
+			slog.Warn(pushErr.Error())
 			continue
 		}
 
@@ -572,6 +572,7 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			schema, err = ds.transformer(item)
 			if err != nil {
 				pushErr = fmt.Errorf("redis item transformer error: %w", err)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 		} else {

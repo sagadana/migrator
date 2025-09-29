@@ -227,8 +227,10 @@ func RandomString(length int) string {
 	return hex.EncodeToString(bytes)[:length]
 }
 
-func CreateTextLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stdout, nil))
+func CreateTextLogger(level slog.Level) *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	}))
 }
 
 func GetTempBasePath(id string) string {

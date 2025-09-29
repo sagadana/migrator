@@ -37,6 +37,8 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   tester-pipe:
     build:
@@ -57,6 +59,8 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   tester-helper:
     build:
@@ -193,6 +197,31 @@ services:
         sed -i 's/\r$//' /usr/bin/replica-init.sh # remove windows carriage-returns
         chmod +x /usr/bin/replica-init.sh
         exec /usr/bin/replica-init.sh $$@
+
+  # ---------------------
+  # PostgreSQL
+  # ---------------------
+  postgres:
+    image: 'postgres:latest'
+    restart: always
+    expose:
+      - 5432
+    ports:
+      - ${POSTGRES_PORT}:5432
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASS}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./tests/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+    networks:
+      - dev-network
+    healthcheck:
+      test: pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost -p 5432
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
 
 networks:
   dev-network:

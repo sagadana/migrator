@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sync"
 
@@ -150,6 +151,7 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 		id, err := m.getID(doc)
 		if err != nil {
 			pushErr = fmt.Errorf("memory item id error: %w", err)
+			slog.Warn(pushErr.Error())
 			continue
 		}
 
@@ -167,6 +169,7 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 		id, err := m.getID(doc)
 		if err != nil {
 			pushErr = fmt.Errorf("memory item id error: %w", err)
+			slog.Warn(pushErr.Error())
 			continue
 		}
 
