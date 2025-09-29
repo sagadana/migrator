@@ -532,7 +532,6 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 		if err != nil {
 			pushErr = fmt.Errorf("redis item id error: %w", err)
 			slog.Warn(pushErr.Error())
-			err = nil
 			continue
 		}
 
@@ -543,7 +542,6 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			if err != nil {
 				pushErr = fmt.Errorf("redis item transformer error: %w", err)
 				slog.Warn(pushErr.Error())
-				err = nil
 				continue
 			}
 		} else {
@@ -567,7 +565,6 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 		if err != nil {
 			pushErr = fmt.Errorf("redis item id error: %w", err)
 			slog.Warn(pushErr.Error())
-			err = nil
 			continue
 		}
 
@@ -576,7 +573,6 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			if err != nil {
 				pushErr = fmt.Errorf("redis item transformer error: %w", err)
 				slog.Warn(pushErr.Error())
-				err = nil
 				continue
 			}
 		} else {

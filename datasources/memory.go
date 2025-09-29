@@ -152,7 +152,6 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 		if err != nil {
 			pushErr = fmt.Errorf("memory item id error: %w", err)
 			slog.Warn(pushErr.Error())
-			err = nil
 			continue
 		}
 
@@ -171,7 +170,6 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 		if err != nil {
 			pushErr = fmt.Errorf("memory item id error: %w", err)
 			slog.Warn(pushErr.Error())
-			err = nil
 			continue
 		}
 

@@ -282,7 +282,6 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb insert transformer error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
 					continue
 				}
 				item = trans
@@ -306,7 +305,6 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb update transformer error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
 					continue
 				}
 				item = trans

@@ -164,16 +164,16 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 
 	// Get schema field names
 	fieldNames := []string{}
-	isValidIdField := false
+	isValidIDField := false
 	for _, field := range s.Fields {
 		// Validate ID field
 		if field.DBName == idField || field.Name == idField {
-			isValidIdField = true
+			isValidIDField = true
 			idField = field.DBName // Use the actual DB column name
 		}
 		fieldNames = append(fieldNames, field.DBName)
 	}
-	if !isValidIdField {
+	if !isValidIDField {
 		panic(fmt.Errorf("postgres datasource: invalid ID field '%s'", idField))
 	}
 
@@ -412,7 +412,6 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert transformer error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
 					continue
 				}
 				row = t
@@ -421,7 +420,6 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
 					continue
 				}
 				row = *t
@@ -458,7 +456,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert transformer error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
+
 					continue
 				}
 				row = t
@@ -467,7 +465,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
-					err = nil
+
 					continue
 				}
 				row = *t
