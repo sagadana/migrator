@@ -140,6 +140,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 
 		mongoURI := os.Getenv("MONGO_URI")
 		mongoDB := os.Getenv("MONGO_DB")
+		// Transformer to convert map to Mongo format
 		mongoTransformer := func(data map[string]any) (map[string]any, error) {
 			// Use to transform to include default mongo ID
 			if data != nil {
@@ -211,7 +212,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 			redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
 		}
 
-		// --------------- 2.1. Memory to Redis --------------- //
+		// --------------- 3.1. Memory to Redis --------------- //
 		id = "test-mem-to-redis-pipeline"
 		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
 		toDs = datasources.NewRedisDatasource(
@@ -232,7 +233,7 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 			destination: toDs,
 		}
 
-		// --------------- 2.2. Redis to Memory --------------- //
+		// --------------- 3.2. Redis to Memory --------------- //
 		id = "test-redis-to-mem-pipeline"
 		fromDs = datasources.NewRedisDatasource(
 			ctx,
@@ -244,6 +245,112 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 				OnInit: func(client *redis.Client) error {
 					return nil
 				},
+			},
+		)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// -----------------------
+		// 4. PostgreSQL
+		// -----------------------
+		postgresDSN := os.Getenv("POSTGRES_DSN")
+		if postgresDSN == "" {
+			postgresDSN = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+				os.Getenv("POSTGRES_HOST"),
+				os.Getenv("POSTGRES_PORT"),
+				os.Getenv("POSTGRES_USER"),
+				os.Getenv("POSTGRES_PASS"),
+				os.Getenv("POSTGRES_DB"),
+				os.Getenv("POSTGRES_SSLMODE"),
+			)
+		}
+
+		// Define test model for PostgreSQL
+		type TestPostgresModel struct {
+			Index      string    `gorm:"primaryKey;column:Index" json:"Index"`
+			CustomerId string    `gorm:"column:CustomerId" json:"CustomerId"`
+			FirstName  string    `gorm:"column:FirstName" json:"FirstName"`
+			LastName   string    `gorm:"column:LastName" json:"LastName"`
+			Company    string    `gorm:"column:Company" json:"Company"`
+			City       string    `gorm:"column:City" json:"City"`
+			Country    string    `gorm:"column:Country" json:"Country"`
+			Phone1     string    `gorm:"column:Phone1" json:"Phone1"`
+			Phone2     string    `gorm:"column:Phone2" json:"Phone2"`
+			Email      string    `gorm:"column:Email" json:"Email"`
+			SubDate    time.Time `gorm:"column:SubscriptionDate" json:"SubscriptionDate"`
+			Website    string    `gorm:"column:Website" json:"Website"`
+			Test_Cr    bool      `gorm:"column:Test_Cr" json:"Test_Cr"` // Use for testing continuous replication
+			CreatedAt  time.Time `gorm:"column:CreatedAt" json:"CreatedAt"`
+			UpdatedAt  time.Time `gorm:"column:UpdatedAt" json:"UpdatedAt"`
+		}
+
+		// Transformer to convert map to TestPostgresModel
+		postgresTransformer := func(data map[string]any) (TestPostgresModel, error) {
+			subDate, _ := time.Parse("2006-01-02", fmt.Sprintf("%v", data["Subscription Date"]))
+			createdAt, err := time.Parse("2006-01-02", fmt.Sprintf("%v", data["CreatedAt"]))
+			if err != nil || createdAt.IsZero() {
+				createdAt = time.Time{}
+			}
+			updatedAt, err := time.Parse("2006-01-02", fmt.Sprintf("%v", data["UpdatedAt"]))
+			if err != nil || updatedAt.IsZero() {
+				updatedAt = time.Now()
+			}
+			return TestPostgresModel{
+				Index:      fmt.Sprintf("%v", data[IDField]),
+				CustomerId: fmt.Sprintf("%v", data["Customer Id"]),
+				FirstName:  fmt.Sprintf("%v", data["First Name"]),
+				LastName:   fmt.Sprintf("%v", data["Last Name"]),
+				Company:    fmt.Sprintf("%v", data["Company"]),
+				City:       fmt.Sprintf("%v", data["City"]),
+				Country:    fmt.Sprintf("%v", data["Country"]),
+				Phone1:     fmt.Sprintf("%v", data["Phone 1"]),
+				Phone2:     fmt.Sprintf("%v", data["Phone 2"]),
+				Email:      fmt.Sprintf("%v", data["Email"]),
+				SubDate:    subDate,
+				Website:    fmt.Sprintf("%v", data["Website"]),
+				Test_Cr:    fmt.Sprintf("%v", data["Test_Cr"]) == "true",
+				CreatedAt:  createdAt,
+				UpdatedAt:  updatedAt,
+			}, nil
+		}
+
+		// --------------- 4.1. Memory to Postgres --------------- //
+		id = "test-mem-to-postgres-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewPostgresDatasource(
+			ctx,
+			datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+				DSN:                postgresDSN,
+				TableName:          getDsName(id, "destination"),
+				Model:              &TestPostgresModel{},
+				IDField:            IDField,
+				WithTransformer:    postgresTransformer,
+				DisableReplication: true,
+			},
+		)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// --------------- 4.2. Postgres to Memory --------------- //
+		id = "test-postgres-to-mem-pipeline"
+		fromDs = datasources.NewPostgresDatasource(
+			ctx,
+			datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+				DSN:                postgresDSN,
+				TableName:          getDsName(id, "source"),
+				Model:              &TestPostgresModel{},
+				IDField:            IDField,
+				Filter:             datasources.PostgresDatasourceFilter{},
+				Sort:               map[string]any{},
+				WithTransformer:    postgresTransformer,
+				DisableReplication: false,
 			},
 		)
 		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
@@ -690,6 +797,12 @@ func TestPipelineImplementations(t *testing.T) {
 		t.Run(tp.id, func(t *testing.T) {
 
 			t.Parallel() // Run pipelines tests in parallel
+
+			// Close - after
+			t.Cleanup(func() {
+				tp.source.Close(&testCtx)
+				tp.destination.Close(&testCtx)
+			})
 
 			// Run tests for different state store types
 			for st := range getTestStores(&testCtx, fmt.Sprintf("%s-%s", tp.id, instanceId)) {

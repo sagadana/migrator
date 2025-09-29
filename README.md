@@ -27,13 +27,14 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Datasources
 
-| Datasource | Status  | Read | Write | Migration | Continuous Replication  |
-| ---------- | ------- | ---- | ----- | --------- | ----------------------- |
-| `Memory`   | ✅      | ✅   | ✅    | ✅        | ✅                      |
-| `MongoDB`  | ✅      | ✅   | ✅    | ✅        | ✅ (_with replica set_) |
-| `Redis`    | ✅      | ✅   | ✅    | ✅        | ✅                      |
-| `Postgres` | Planned | TBC  | TBC   | TBC       | TBC                     |
-| `<More>`   | Soon    | TBC  | TBC   | TBC       | TBC                     |
+| Datasource | Status | Read | Write | Migration | Continuous Replication             |
+| ---------- | ------ | ---- | ----- | --------- | ---------------------------------- |
+| `Memory`   | ✅     | ✅   | ✅    | ✅        | ✅                                 |
+| `MongoDB`  | ✅     | ✅   | ✅    | ✅        | ✅ (_with change streams_)         |
+| `Redis`    | ✅     | ✅   | ✅    | ✅        | ✅ (_with keyspace notifications_) |
+| `Postgres` | ✅     | ✅   | ✅    | ✅        | ✅ (_with logical replication_)    |
+| `MySQL`    | Panned | TBC  | TBC   | TBC       | TBC                                |
+| `<More>`   | Soon   | TBC  | TBC   | TBC       | TBC                                |
 
 ## State Stores
 

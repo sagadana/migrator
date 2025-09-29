@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"time"
 
@@ -280,6 +281,8 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb insert transformer error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
 					continue
 				}
 				item = trans
@@ -302,6 +305,8 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 				trans, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("mongodb update transformer error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
 					continue
 				}
 				item = trans
@@ -311,6 +316,7 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 			key, ok := item[ds.idField]
 			if !ok || key == nil {
 				pushErr = fmt.Errorf("mongodb update error: missing '%s' field", ds.idField)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 

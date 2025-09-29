@@ -2,11 +2,13 @@ package datasources
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -16,7 +18,9 @@ import (
 	"github.com/lib/pq"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 const PostgresDefaultIDField = "id"
@@ -36,10 +40,11 @@ type PostgresDatasourceConfigs[T any] struct {
 	DSN string
 	// Table name to work with
 	TableName string
-	// GORM model struct for the table
+	// GORM model struct for the table.
 	// @see: https://gorm.io/docs/models.html
 	Model *T
-	// ID Field for input JSON. Default is "id"
+	// ID Field for the table. Default is "id".
+	// This would very likely correspond to the primary key field in the table
 	IDField string
 
 	// Filter conditions (WHERE clause)
@@ -61,10 +66,11 @@ type PostgresDatasourceConfigs[T any] struct {
 }
 
 type PostgresDatasource[T any] struct {
-	db        *gorm.DB
-	tableName string
-	model     *T
-	idField   string
+	db         *gorm.DB
+	tableName  string
+	idField    string
+	fieldSpecs []*schema.Field
+	fieldNames []string
 
 	filter      PostgresDatasourceFilter
 	sort        map[string]any
@@ -109,8 +115,8 @@ func ConnectToPostgreSQL[T any](ctx *context.Context, config PostgresDatasourceC
 
 	// Configure connection pool
 	// TODO: Make these configurable
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetMaxOpenConns(1000)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	return db
@@ -127,13 +133,13 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 
 	// Set default publication names
 	publicationName := config.PublicationName
-	if publicationName == "" {
+	if publicationName == "" && !config.DisableReplication {
 		publicationName = fmt.Sprintf("%s_pub", tableSuffix)
 	}
 
 	// Set default replication slot name
 	replicationSlotName := config.ReplicationSlotName
-	if replicationSlotName == "" {
+	if replicationSlotName == "" && !config.DisableReplication {
 		replicationSlotName = fmt.Sprintf("%s_slot", tableSuffix)
 	}
 
@@ -142,12 +148,42 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 		panic(fmt.Errorf("postgres datasource: model is required"))
 	}
 
+	// Connect to PostgreSQL
+	db := ConnectToPostgreSQL(ctx, config)
+
+	// Auto-migrate the table
+	if err := db.Table(config.TableName).AutoMigrate(config.Model); err != nil {
+		panic(fmt.Errorf("postgres datasource: failed to auto-migrate table %s: %w", config.TableName, err))
+	}
+
+	// Parse the schema for the model struct
+	s, err := schema.Parse(config.Model, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		panic("failed to create schema")
+	}
+
+	// Get schema field names
+	fieldNames := []string{}
+	isValidIdField := false
+	for _, field := range s.Fields {
+		// Validate ID field
+		if field.DBName == idField || field.Name == idField {
+			isValidIdField = true
+			idField = field.DBName // Use the actual DB column name
+		}
+		fieldNames = append(fieldNames, field.DBName)
+	}
+	if !isValidIdField {
+		panic(fmt.Errorf("postgres datasource: invalid ID field '%s'", idField))
+	}
+
 	// Set default model if not provided
 	ds := &PostgresDatasource[T]{
-		db:        ConnectToPostgreSQL(ctx, config),
-		tableName: config.TableName,
-		model:     config.Model,
-		idField:   idField,
+		db:         db,
+		tableName:  config.TableName,
+		idField:    idField,
+		fieldSpecs: s.Fields,
+		fieldNames: fieldNames,
 
 		filter:      config.Filter,
 		sort:        config.Sort,
@@ -156,11 +192,6 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 		publicationName:     publicationName,
 		replicationSlotName: replicationSlotName,
 		disableReplication:  config.DisableReplication,
-	}
-
-	// Auto-migrate the table
-	if err := ds.db.Table(config.TableName).AutoMigrate(config.Model); err != nil {
-		panic(fmt.Errorf("postgres datasource: failed to auto-migrate table %s: %w", config.TableName, err))
 	}
 
 	// Set up logical replication if not disabled
@@ -348,7 +379,9 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 	var pushErr error
 
 	// Start transaction
-	tx := ds.db.WithContext(*ctx).Begin()
+	tx := ds.db.WithContext(*ctx).Begin(&sql.TxOptions{
+		Isolation: sql.LevelReadCommitted,
+	})
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
@@ -359,8 +392,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 	// Insert
 	if len(request.Inserts) > 0 {
 		var item map[string]any
-		var trans T
-		var err error
+		var row T
 
 		for _, item = range request.Inserts {
 			if item == nil {
@@ -370,94 +402,108 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 			_, ok := item[ds.idField]
 			if !ok {
 				pushErr = fmt.Errorf("postgres insert error: missing '%s' field", ds.idField)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 
-			// Transform
+			// Transform item to model
 			if ds.transformer != nil {
-				trans, err = ds.transformer(item)
+				t, err := ds.transformer(item)
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert transformer error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
 					continue
 				}
+				row = t
+			} else {
+				t, err := ds.UnmarshalModel(item)
+				if err != nil {
+					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
+					continue
+				}
+				row = *t
+			}
 
-				// Create record
-				if err = tx.Table(ds.tableName).Create(&trans).Error; err != nil {
-					pushErr = fmt.Errorf("postgres insert error: %w", err)
-					continue
-				}
-			} else if err = tx.Table(ds.tableName).Create(&item).Error; err != nil {
-				pushErr = fmt.Errorf("postgres insert error: %w", err)
+			// Use PostgreSQL's ON CONFLICT for upsert
+			result := tx.Table(ds.tableName).Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: ds.idField}},
+				DoUpdates: clause.AssignmentColumns(ds.fieldNames),
+			}).Create(&row)
+			if result.Error != nil {
+				pushErr = fmt.Errorf("postgres upsert error: %w", result.Error)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 
-			count.Inserts++
+			count.Inserts += uint64(result.RowsAffected)
 		}
 	}
 
 	// Update
 	if len(request.Updates) > 0 {
 		var item map[string]any
-		var trans T
-		var err error
+		var row T
 
 		for _, item = range request.Updates {
 			if item == nil {
 				continue
 			}
 
-			// Transform
+			// Transform item to model
 			if ds.transformer != nil {
-				trans, err = ds.transformer(item)
+				t, err := ds.transformer(item)
 				if err != nil {
-					pushErr = fmt.Errorf("postgres update transformer error: %w", err)
+					pushErr = fmt.Errorf("postgres insert transformer error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
 					continue
 				}
-
-				// Upsert: Insert if not exists, otherwise update
-				var existingModel T
-				err := tx.Table(ds.tableName).Where(fmt.Sprintf("%s = ?", pq.QuoteIdentifier(ds.idField)), item[ds.idField]).First(&existingModel).Error
-				if err != nil && err == gorm.ErrRecordNotFound {
-					// Record doesn't exist, insert it
-					if err = tx.Table(ds.tableName).Create(&trans).Error; err != nil {
-						pushErr = fmt.Errorf("postgres upsert insert error: %w", err)
-						continue
-					}
-
-					count.Updates++
-				} else if err != nil {
-					pushErr = fmt.Errorf("postgres upsert query error: %w", err)
-					continue
-				} else {
-					// Record exists, update it
-					result := tx.Table(ds.tableName).Where(fmt.Sprintf("%s = ?", pq.QuoteIdentifier(ds.idField)), item[ds.idField]).Updates(trans)
-					if result.Error != nil {
-						pushErr = fmt.Errorf("postgres upsert update error: %w", result.Error)
-						continue
-					}
-
-					count.Updates += uint64(result.RowsAffected)
-				}
-
+				row = t
 			} else {
+				t, err := ds.UnmarshalModel(item)
+				if err != nil {
+					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
+					slog.Warn(pushErr.Error())
+					err = nil
+					continue
+				}
+				row = *t
+			}
 
-				// Update record
-				result := tx.Table(ds.tableName).Updates(item)
+			// Upsert: Update if exists, insert if not
+			result := tx.Table(ds.tableName).
+				Where(fmt.Sprintf("%s = ?", pq.QuoteIdentifier(ds.idField)), item[ds.idField]).
+				Updates(row)
+			if result.RowsAffected == 0 {
 				if result.Error != nil {
-					pushErr = fmt.Errorf("postgres update error: %w", result.Error)
+					pushErr = fmt.Errorf("postgres upsert update error: %w", result.Error)
+					slog.Warn(pushErr.Error())
 					continue
 				}
 
-				count.Updates += uint64(result.RowsAffected)
+				// No rows updated, try insert
+				result := tx.Table(ds.tableName).Create(&row)
+				if result.Error != nil {
+					pushErr = fmt.Errorf("postgres upsert insert error: %w", result.Error)
+					slog.Warn(pushErr.Error())
+				} else {
+					count.Updates++
+				}
+			} else {
+				count.Updates++
 			}
 		}
 	}
 
 	// Delete
 	if len(request.Deletes) > 0 {
-		result := tx.Table(ds.tableName).Where(fmt.Sprintf("%s IN ?", ds.idField), request.Deletes).Delete(nil)
+		result := tx.Table(ds.tableName).Where(fmt.Sprintf("%s IN ?", pq.QuoteIdentifier(ds.idField)), request.Deletes).Delete(nil)
 		if result.Error != nil {
 			pushErr = fmt.Errorf("postgres delete error: %w", result.Error)
+			slog.Warn(pushErr.Error())
 		} else {
 			count.Deletes += uint64(len(request.Deletes))
 		}
@@ -733,28 +779,32 @@ func (ds *PostgresDatasource[T]) processLogicalReplicationData(walData []byte, r
 		relations[msg.RelationID] = msg
 		return nil, nil
 
+	// Handle INSERT messages
 	case *pglogrepl.InsertMessage:
-		// Handle INSERT messages
 		data := ds.parseColumnData(msg.Tuple, relations[msg.RelationID])
+
 		return &ReplicationEvent{
 			Action: ReplicationEventActionInsert,
 			Data:   data,
 		}, nil
 
+	// Handle UPDATE messages - use NewTuple for current values
 	case *pglogrepl.UpdateMessage:
-		// Handle UPDATE messages - use NewTuple for current values
 		data := ds.parseColumnData(msg.NewTuple, relations[msg.RelationID])
+
 		return &ReplicationEvent{
 			Action: ReplicationEventActionUpdate,
 			Data:   data,
 		}, nil
 
+	// Handle DELETE messages
 	case *pglogrepl.DeleteMessage:
-		// Handle DELETE messages
+
 		var data map[string]any
 		if msg.OldTupleType == 'K' || msg.OldTupleType == 'O' {
 			data = ds.parseColumnData(msg.OldTuple, relations[msg.RelationID])
 		}
+
 		return &ReplicationEvent{
 			Action: ReplicationEventActionDelete,
 			Data:   data,
@@ -878,6 +928,7 @@ func (ds *PostgresDatasource[T]) startLogicalReplication(ctx context.Context, wa
 				// Primary keepalive message (heartbeat)
 				// Used to ensure the standby is still alive
 				case pglogrepl.PrimaryKeepaliveMessageByteID:
+
 					pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyData.Data[1:])
 					if err != nil {
 						slog.Error("postgres replication: failed to parse primary keepalive message", "error", err)
@@ -910,6 +961,7 @@ func (ds *PostgresDatasource[T]) startLogicalReplication(ctx context.Context, wa
 						continue
 					}
 
+					// Update current LSN position
 					startLSN = xld.WALStart + pglogrepl.LSN(len(xld.WALData))
 
 					// Process logical replication message using pglogrepl

@@ -179,8 +179,41 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 			)
 		}
 
+		// ---------------------- Simple Model  -----------------------
+
 		// Define test model for PostgreSQL
-		type TestPostgresModel struct {
+		type TestSimplePostgresModel struct {
+			ID     string `gorm:"primaryKey;column:id" json:"id"`
+			FieldA string `gorm:"column:fieldA" json:"fieldA"`
+		}
+
+		id = "postgres-simple-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			source: datasources.NewPostgresDatasource(
+				ctx,
+				datasources.PostgresDatasourceConfigs[TestSimplePostgresModel]{
+					DSN:       postgresDSN,
+					TableName: getDsName(id),
+					Model:     &TestSimplePostgresModel{},
+					IDField:   TestIDField,
+
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					DisableReplication: false,
+				},
+			),
+		}
+
+		// ---------------------- Complex Model -----------------------
+
+		// Define test model for PostgreSQL
+		type TestComplexPostgresModel struct {
 			ID        string    `gorm:"primaryKey;column:id" json:"id"`
 			FieldA    string    `gorm:"column:fieldA" json:"fieldA"`
 			FieldB    string    `gorm:"column:fieldB" json:"fieldB"`
@@ -190,7 +223,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 			UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
 		}
 
-		id = "postgres-datasource"
+		id = "postgres-complex-datasource"
 		out <- TestDatasource{
 			id:              id,
 			withFilter:      true,
@@ -198,10 +231,10 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 			withSort:        true,
 			source: datasources.NewPostgresDatasource(
 				ctx,
-				datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+				datasources.PostgresDatasourceConfigs[TestComplexPostgresModel]{
 					DSN:       postgresDSN,
 					TableName: getDsName(id),
-					Model:     &TestPostgresModel{},
+					Model:     &TestComplexPostgresModel{},
 					IDField:   TestIDField,
 					Filter: datasources.PostgresDatasourceFilter{
 						Query:  fmt.Sprintf("\"%s\" = ?", TestFilterOutField),
@@ -210,9 +243,10 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					Sort: map[string]any{
 						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
 					},
-					WithTransformer: func(data map[string]any) (TestPostgresModel, error) {
+
+					WithTransformer: func(data map[string]any) (TestComplexPostgresModel, error) {
 						s, _ := strconv.Atoi(fmt.Sprintf("%v", data[TestSortAscField]))
-						return TestPostgresModel{
+						return TestComplexPostgresModel{
 							ID:        fmt.Sprintf("%v", data[TestIDField]),
 							FieldA:    fmt.Sprintf("%v", data[TestAField]),
 							FieldB:    fmt.Sprintf("%v", data[TestBField]),
@@ -433,18 +467,18 @@ func TestDatasourceImplementations(t *testing.T) {
 		t.Run(td.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
+			// Cleanup after
+			t.Cleanup(func() {
+				td.source.Clear(&testCtx)
+				td.source.Close(&testCtx)
+			})
+
 			if !td.synchronous {
 				t.Parallel() // Run datasources tests in parallel
 			}
 
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
 			defer cancel()
-
-			// Cleanup after
-			t.Cleanup(func() {
-				td.source.Clear(&testCtx)
-				td.source.Close(&testCtx)
-			})
 
 			t.Run("Test_CRUD", func(t *testing.T) {
 				td.source.Clear(&ctx)
@@ -458,7 +492,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				pushReq := &datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 					},
 				}
 				cnt, err := td.source.Push(&ctx, pushReq)
@@ -762,10 +796,10 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
-						{TestIDField: "c", TestAField: "bars", TestBField: 1234},
-						{TestIDField: "d", TestAField: "barss", TestBField: 1235},
-						{TestIDField: "e", TestAField: "barsss", TestBField: 1236},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+						{TestIDField: "c", TestAField: "bars", TestBField: "1234"},
+						{TestIDField: "d", TestAField: "barss", TestBField: "1235"},
+						{TestIDField: "e", TestAField: "barsss", TestBField: "1236"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
@@ -859,7 +893,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						req: &datasources.DatasourcePushRequest{
 							Inserts: []map[string]any{
 								{TestIDField: "a", TestAField: "foo"},
-								{TestIDField: "b", TestAField: "bar", TestBField: 123},
+								{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 							},
 						},
 						expect: struct {
@@ -1008,10 +1042,10 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
-						{TestIDField: "c", TestAField: "baz", TestBField: 456},
-						{TestIDField: "d", TestAField: "qux", TestBField: 789},
-						{TestIDField: "e", TestAField: "quux", TestBField: 1011},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+						{TestIDField: "c", TestAField: "baz", TestBField: "456"},
+						{TestIDField: "d", TestAField: "qux", TestBField: "789"},
+						{TestIDField: "e", TestAField: "quux", TestBField: "1011"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
@@ -1131,7 +1165,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				data := datasources.DatasourcePushRequest{
 					Inserts: []map[string]any{
 						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: 123},
+						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 					},
 				}
 				_, err := td.source.Push(&ctx, &data)
