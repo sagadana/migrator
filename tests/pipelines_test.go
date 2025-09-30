@@ -820,7 +820,12 @@ func TestPipelineImplementations(t *testing.T) {
 
 					// Load sample data into source
 					tp.source.Clear(&testCtx)
-					err := datasources.LoadCSV(&testCtx, tp.source, TestDatasetPath, 10)
+					err := tp.source.Import(&testCtx, datasources.DatasourceImportRequest{
+						Type:      datasources.DatasourceImportTypeCSV,
+						Source:    datasources.DatasourceImportSourceFile,
+						Location:  TestDatasetPath,
+						BatchSize: 10,
+					})
 					if err != nil {
 						panic(fmt.Errorf("failed to load data from CSV to '%s' source: %s", tp.id, err))
 					}

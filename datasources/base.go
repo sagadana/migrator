@@ -69,25 +69,26 @@ type DatasourceStreamResult struct {
 type DatasourceImportType string
 
 const (
-	ImportTypeCSV DatasourceImportType = "csv"
+	DatasourceImportTypeCSV DatasourceImportType = "csv"
 )
 
 type DatasourceImportSource string
 
 const (
-	ImportSourceFile DatasourceImportType = "file"
+	DatasourceImportSourceFile DatasourceImportSource = "file"
 )
 
 type DatasourceImportRequest struct {
-	Type     DatasourceImportType
-	Source   DatasourceImportSource
-	Location string
+	Type      DatasourceImportType
+	Source    DatasourceImportSource
+	Location  string
+	BatchSize uint64
 }
 
 type DatasourceExportType string
 
 const (
-	ExportTypeCSV DatasourceExportType = "csv"
+	DatasourceExportTypeCSV DatasourceExportType = "csv"
 )
 
 type DatasourceExportDestination string
@@ -100,6 +101,7 @@ type DatasourceExportRequest struct {
 	Type        DatasourceExportType
 	Destination DatasourceExportDestination
 	Location    string
+	BatchSize   uint64
 }
 
 // -------------------------------
@@ -123,8 +125,10 @@ type Datasource interface {
 	// Close data source
 	Close(ctx *context.Context) error
 
-	// Import contents
-	// Import(ctx *context.Context, request DatasourceImportRequest) error
+	// Import data
+	Import(ctx *context.Context, request DatasourceImportRequest) error
+	// Export data
+	Export(ctx *context.Context, request DatasourceExportRequest) error
 }
 
 // Load CSV data into datasource
@@ -159,9 +163,7 @@ func SaveCSV(
 	batchSize uint64,
 ) error {
 	// Normalize batch size
-	if batchSize == 0 {
-		batchSize = 1
-	}
+	batchSize = max(batchSize, 1)
 
 	// Get total count to determine if we have data
 	totalCount := ds.Count(ctx, &DatasourceFetchRequest{})

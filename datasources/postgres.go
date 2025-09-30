@@ -616,6 +616,26 @@ func (ds *PostgresDatasource[T]) Close(ctx *context.Context) error {
 	return sqlDB.Close()
 }
 
+// Import data into the data source
+func (ds *PostgresDatasource[T]) Import(ctx *context.Context, request DatasourceImportRequest) error {
+	switch request.Type {
+	case DatasourceImportTypeCSV: // TODO: use postgres native COPY command
+		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported import type: %s", request.Type)
+	}
+}
+
+// Export data from the data source
+func (ds *PostgresDatasource[T]) Export(ctx *context.Context, request DatasourceExportRequest) error {
+	switch request.Type {
+	case DatasourceExportTypeCSV: // TODO: use postgres native COPY command
+		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported export type: %s", request.Type)
+	}
+}
+
 // -------------------------------------
 // Logical Replication using pglogrepl
 // -------------------------------------

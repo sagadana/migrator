@@ -24,6 +24,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 - **Batch Migration**: Process migration in batches
 - **Parallel Migration**: Break data into chunks and load in parallel
 - **Continuous Replication**: Watch for new changes and replicate them
+- **Import/Export**: Import/Export data from/to CSV files
 
 ## Datasources
 
@@ -71,7 +72,12 @@ func main() {
     // Create the `From` datasource _(Memory Data Source in this example)_
     fromDs := datasources.NewMemoryDatasource("test-from", "id")
     // Load data from a CSV if needed
-    err := datasources.LoadCSV(&ctx, fromDs, "./tests/sample-100.csv", /*batch size*/ 10)
+    err := fromDs.Import(&ctx, datasources.DatasourceImportRequest{
+        Type:      datasources.DatasourceImportTypeCSV,
+        Source:    datasources.DatasourceImportSourceFile,
+        Location:  "./tests/sample-100.csv",
+        BatchSize: 10,
+    })
     if err != nil {
         panic(err)
     }

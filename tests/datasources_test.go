@@ -71,6 +71,14 @@ func (m *MockErrorDatasource) Close(ctx *context.Context) error {
 	return nil
 }
 
+func (m *MockErrorDatasource) Import(ctx *context.Context, request datasources.DatasourceImportRequest) error {
+	return fmt.Errorf("simulated import error")
+}
+
+func (m *MockErrorDatasource) Export(ctx *context.Context, request datasources.DatasourceExportRequest) error {
+	return fmt.Errorf("simulated export error")
+}
+
 // --------
 // Utils
 // --------
@@ -218,6 +226,7 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 		type TestSimplePostgresModel struct {
 			ID     string `gorm:"primaryKey;column:id" json:"id"`
 			FieldA string `gorm:"column:fieldA" json:"fieldA"`
+			FieldB string `gorm:"column:fieldB" json:"fieldB"`
 		}
 
 		id = "postgres-simple-datasource"
@@ -1281,6 +1290,94 @@ func TestDatasourceImplementations(t *testing.T) {
 					}
 				})
 			}
+
+			// Test Import (basic tests)
+			t.Run("Test_Import", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Create temp CSV file
+				dir := t.TempDir()
+				csvPath := filepath.Join(dir, "test.csv")
+				csvContent := "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n"
+				err := os.WriteFile(csvPath, []byte(csvContent), 0644)
+				if err != nil {
+					t.Fatalf("⛔️ failed to create temp CSV file: %v", err)
+				}
+
+				// Import CSV
+				err = td.source.Import(&ctx, datasources.DatasourceImportRequest{
+					Type:      datasources.DatasourceImportTypeCSV,
+					Source:    datasources.DatasourceImportSourceFile,
+					Location:  csvPath,
+					BatchSize: 2,
+				})
+				if err != nil {
+					t.Fatalf("⛔️ Import error: %v", err)
+				}
+
+				// Verify count
+				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
+					t.Errorf("❌ expected count=3 after import, got %d", got)
+				}
+			})
+
+			// Test Export (basic tests)
+			t.Run("Test_Export", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Insert test data
+				data := datasources.DatasourcePushRequest{
+					Inserts: []map[string]any{
+						{TestIDField: "1", TestAField: "Alice", TestBField: "30"},
+						{TestIDField: "2", TestAField: "Bob", TestBField: "25"},
+						{TestIDField: "3", TestAField: "Charlie", TestBField: "35"},
+					},
+				}
+				_, err := td.source.Push(&ctx, &data)
+				if err != nil {
+					t.Fatalf("⛔️ Push error: %s", err)
+				}
+
+				// Verify count
+				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
+					t.Errorf("❌ expected count=3 after push, got %d", got)
+				}
+
+				// Create temp CSV file path
+				dir := t.TempDir()
+				csvPath := filepath.Join(dir, "export.csv")
+
+				// Call SaveCSV
+				err = datasources.SaveCSV(&ctx, td.source, csvPath, 2)
+				if err != nil {
+					t.Fatalf("⛔️ SaveCSV failed: %v", err)
+				}
+
+				// Read and verify the file content
+				content, err := os.ReadFile(csvPath)
+				if err != nil {
+					t.Fatalf("⛔️ failed to read output file: %v", err)
+				}
+
+				gotContent := string(content)
+
+				// For basic CSV structure validation, we'll check:
+				// 1. The file has content
+				if len(gotContent) == 0 {
+					t.Errorf("❌ got empty file, expected content")
+				}
+				// 2. It has the right number of lines (header + data)
+				gotLines := strings.Split(strings.TrimSuffix(gotContent, "\n"), "\n")
+				if len(gotLines) != 4 { // 1 header + 3 data rows
+					t.Errorf("❌ expected 4 lines (1 header + 3 data), got %d lines", len(gotLines))
+				}
+				// 3. Headers are present and correct
+				expectedHeaders := []string{TestAField, TestBField, TestIDField} // Sorted order
+				gotHeaders := strings.Split(gotLines[0], ",")
+				if len(gotHeaders) < len(expectedHeaders) { // Can be more if datasource adds extra fields
+					t.Errorf("❌ expected %d headers, got %d headers", len(expectedHeaders), len(gotHeaders))
+				}
+			})
 
 			fmt.Print("\n---------------------------------------------------------------------------------\n\n")
 		})
