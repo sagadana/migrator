@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -173,6 +174,8 @@ func writeTempFile(t *testing.T, content string) string {
 }
 
 func TestStreamCSV(t *testing.T) {
+	t.Parallel()
+
 	// Helper to build CSV content from 2D array
 	toCSV := func(rows [][]string) string {
 		if len(rows) == 0 {
@@ -267,6 +270,8 @@ func TestStreamCSV(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			var path string
 			if tt.wantErr {
 				path = "no_such_file.csv"
@@ -298,6 +303,8 @@ func TestStreamCSV(t *testing.T) {
 }
 
 func TestExtractNumber(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input string
 		want  int
@@ -311,60 +318,104 @@ func TestExtractNumber(t *testing.T) {
 	for _, tt := range tests {
 		got := helpers.ExtractNumber(tt.input)
 		if got != tt.want {
-			t.Errorf("ExtractNumber(%q) = %d; want %d", tt.input, got, tt.want)
+			t.Errorf("❌ ExtractNumber(%q) = %d; want %d", tt.input, got, tt.want)
 		}
 	}
 }
 
 func TestNumberAwareSort(t *testing.T) {
+	t.Parallel()
+
 	data := []string{"file10.txt", "file2.txt", "file1.txt", "file2a.txt", "file2b.txt"}
 	helpers.NumberAwareSort(data)
 	want := []string{"file1.txt", "file2.txt", "file2a.txt", "file2b.txt", "file10.txt"}
 	for i := range want {
 		if data[i] != want[i] {
-			t.Errorf("NumberAwareSort result[%d] = %q; want %q", i, data[i], want[i])
+			t.Errorf("❌ NumberAwareSort result[%d] = %q; want %q", i, data[i], want[i])
 		}
 	}
 }
 
 func TestCalculateHash(t *testing.T) {
+	t.Parallel()
+
 	data := []byte("hello world")
 	got := helpers.CalculateHash(data)
 	expectedArr := sha256.Sum256(data)
 	want := hex.EncodeToString(expectedArr[:])
 	if got != want {
-		t.Errorf("CalculateHash = %q; want %q", got, want)
+		t.Errorf("❌ CalculateHash = %q; want %q", got, want)
 	}
 }
 
 func TestRandomString(t *testing.T) {
+	t.Parallel()
+
 	length := 16
 	s1 := helpers.RandomString(length)
 	s2 := helpers.RandomString(length)
 	if len(s1) != length {
-		t.Errorf("RandomString length = %d; want %d", len(s1), length)
+		t.Errorf("❌ RandomString length = %d; want %d", len(s1), length)
 	}
 	if len(s2) != length {
-		t.Errorf("RandomString length = %d; want %d", len(s2), length)
+		t.Errorf("❌ RandomString length = %d; want %d", len(s2), length)
 	}
 	if s1 == s2 {
-		t.Errorf("RandomString produced identical strings %q and %q", s1, s2)
+		t.Errorf("❌ RandomString produced identical strings %q and %q", s1, s2)
 	}
 	for _, r := range s1 {
 		if !strings.Contains("0123456789abcdef", string(r)) {
-			t.Errorf("RandomString contains invalid char %q", r)
+			t.Errorf("❌ RandomString contains invalid char %q", r)
 		}
 	}
 }
 
 func TestCreateTextLogger(t *testing.T) {
-	logger := helpers.CreateTextLogger()
+	t.Parallel()
+
+	logger := helpers.CreateTextLogger(slog.LevelDebug)
 	if logger == nil {
 		t.Fatal("CreateTextLogger returned nil")
+	}
+	if logger.Handler() == nil {
+		t.Fatal("CreateTextLogger returned logger with nil handler")
+	}
+
+	ctx := context.Background()
+	// Test logging at different levels
+	if logger.Enabled(ctx, slog.LevelInfo) != true {
+		t.Error("Expected Info level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelDebug) != true {
+		t.Error("Expected Debug level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelWarn) != true {
+		t.Error("Expected Warn level to be enabled")
+	}
+	if logger.Enabled(ctx, slog.LevelError) != true {
+		t.Error("Expected Error level to be enabled")
+	}
+
+	// Create logger with higher level
+
+	logger = helpers.CreateTextLogger(slog.LevelError)
+	if logger.Enabled(ctx, slog.LevelInfo) != false {
+		t.Error("Expected Info level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelDebug) != false {
+		t.Error("Expected Debug level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelWarn) != false {
+		t.Error("Expected Warn level to be disabled")
+	}
+	if logger.Enabled(ctx, slog.LevelError) != true {
+		t.Error("Expected Error level to be enabled")
 	}
 }
 
 func TestGetTempBasePath(t *testing.T) {
+	t.Parallel()
+
 	id := "mypath"
 	origRunner := os.Getenv("RUNNER_TEMP")
 	origBase := os.Getenv("TEMP_BASE_PATH")
@@ -378,7 +429,7 @@ func TestGetTempBasePath(t *testing.T) {
 	want := filepath.Join(os.TempDir(), id)
 	got := helpers.GetTempBasePath(id)
 	if got != want {
-		t.Errorf("GetTempBasePath fallback = %q; want %q", got, want)
+		t.Errorf("❌ GetTempBasePath fallback = %q; want %q", got, want)
 	}
 
 	os.Unsetenv("RUNNER_TEMP")
@@ -386,7 +437,7 @@ func TestGetTempBasePath(t *testing.T) {
 	want = filepath.Join("/basepath", id)
 	got = helpers.GetTempBasePath(id)
 	if got != want {
-		t.Errorf("GetTempBasePath TEMP_BASE_PATH = %q; want %q", got, want)
+		t.Errorf("❌ GetTempBasePath TEMP_BASE_PATH = %q; want %q", got, want)
 	}
 
 	os.Setenv("RUNNER_TEMP", "/runner")
@@ -394,6 +445,281 @@ func TestGetTempBasePath(t *testing.T) {
 	want = filepath.Join("/runner", id)
 	got = helpers.GetTempBasePath(id)
 	if got != want {
-		t.Errorf("GetTempBasePath RUNNER_TEMP = %q; want %q", got, want)
+		t.Errorf("❌ GetTempBasePath RUNNER_TEMP = %q; want %q", got, want)
+	}
+}
+
+func TestFlatten(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		prefix   string
+		src      map[string]any
+		expected map[string]any
+	}{
+		{
+			name:   "Depth1_SimpleMap",
+			prefix: "",
+			src: map[string]any{
+				"a": 1,
+				"b": "two",
+			},
+			expected: map[string]any{
+				"a": 1,
+				"b": "two",
+			},
+		},
+		{
+			name:   "Depth2_NestedMap",
+			prefix: "",
+			src: map[string]any{
+				"a": map[string]any{
+					"b": 2,
+				},
+			},
+			expected: map[string]any{
+				"a.b": 2,
+			},
+		},
+		{
+			name:   "Depth3_NestedMap",
+			prefix: "",
+			src: map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": 3,
+					},
+				},
+			},
+			expected: map[string]any{
+				"a.b.c": 3,
+			},
+		},
+		{
+			name:   "Depth4_NestedMap",
+			prefix: "",
+			src: map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": map[string]any{
+							"d": 4,
+						},
+					},
+				},
+			},
+			expected: map[string]any{
+				"a.b.c.d": 4,
+			},
+		},
+		{
+			name:   "Depth5_NestedMap",
+			prefix: "",
+			src: map[string]any{
+				"a": map[string]any{
+					"b": map[string]any{
+						"c": map[string]any{
+							"d": map[string]any{
+								"e": 5,
+							},
+						},
+					},
+				},
+			},
+			expected: map[string]any{
+				"a.b.c.d.e": 5,
+			},
+		},
+		{
+			name:   "SliceAtRoot",
+			prefix: "",
+			src: map[string]any{
+				"arr": []any{10, 20, 30},
+			},
+			expected: map[string]any{
+				"arr.0": 10,
+				"arr.1": 20,
+				"arr.2": 30,
+			},
+		},
+		{
+			name:   "MixedMapAndSlice",
+			prefix: "",
+			src: map[string]any{
+				"level1": map[string]any{
+					"list": []any{
+						1,
+						map[string]any{"x": 99},
+					},
+				},
+			},
+			expected: map[string]any{
+				"level1.list.0":   1,
+				"level1.list.1.x": 99,
+			},
+		},
+		{
+			name:   "NonEmptyPrefix",
+			prefix: "root",
+			src: map[string]any{
+				"foo": map[string]any{
+					"bar": []any{true, false},
+				},
+				"baz": 42,
+			},
+			expected: map[string]any{
+				"root.foo.bar.0": true,
+				"root.foo.bar.1": false,
+				"root.baz":       42,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dest := make(map[string]any)
+			helpers.Flatten(tc.prefix, tc.src, dest)
+
+			// Compare length first for quick failure
+			if len(dest) != len(tc.expected) {
+				t.Fatalf("⛔️ expected %d entries, got %d", len(tc.expected), len(dest))
+			}
+
+			// Compare each key/value
+			for key, want := range tc.expected {
+				got, ok := dest[key]
+				if !ok {
+					t.Errorf("❌ missing key %q in dest", key)
+					continue
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("❌ at key %q: expected %#v (%T), got %#v (%T)",
+						key, want, want, got, got)
+				}
+			}
+
+			// Ensure no unexpected keys
+			for key := range dest {
+				if _, ok := tc.expected[key]; !ok {
+					t.Errorf("❌ unexpected key %q in dest", key)
+				}
+			}
+		})
+	}
+}
+
+func TestSlice(t *testing.T) {
+	t.Parallel()
+
+	base := []any{10, 20, 30, 40, 50}
+
+	tests := []struct {
+		name               string
+		items              []any
+		offset, limit      uint64
+		wantSlice          []any
+		wantStart, wantEnd uint64
+	}{
+		{
+			name:      "EmptyItems_AnyOffsetLimit",
+			items:     []any{},
+			offset:    0,
+			limit:     5,
+			wantSlice: nil,
+			wantStart: 0,
+			wantEnd:   0,
+		},
+		{
+			name:      "OffsetBeyondLen",
+			items:     base,
+			offset:    10,
+			limit:     3,
+			wantSlice: nil,
+			wantStart: 0,
+			wantEnd:   0,
+		},
+		{
+			name:      "OffsetAtLen",
+			items:     base,
+			offset:    5,
+			limit:     1,
+			wantSlice: nil,
+			wantStart: 0,
+			wantEnd:   0,
+		},
+		{
+			name:      "NoLimit_LimitZero",
+			items:     base,
+			offset:    0,
+			limit:     0,
+			wantSlice: []any{10, 20, 30, 40, 50},
+			wantStart: 0,
+			wantEnd:   5,
+		},
+		{
+			name:      "SimpleLimitWithinRange",
+			items:     base,
+			offset:    0,
+			limit:     2,
+			wantSlice: []any{10, 20},
+			wantStart: 0,
+			wantEnd:   2,
+		},
+		{
+			name:      "LimitExceedsLen",
+			items:     base,
+			offset:    0,
+			limit:     10,
+			wantSlice: []any{10, 20, 30, 40, 50},
+			wantStart: 0,
+			wantEnd:   5,
+		},
+		{
+			name:      "MiddlePage_ExactLimit",
+			items:     base,
+			offset:    1,
+			limit:     3,
+			wantSlice: []any{20, 30, 40},
+			wantStart: 1,
+			wantEnd:   4,
+		},
+		{
+			name:      "MiddlePage_LimitExceeds",
+			items:     base,
+			offset:    3,
+			limit:     10,
+			wantSlice: []any{40, 50},
+			wantStart: 3,
+			wantEnd:   5,
+		},
+		{
+			name:      "OffsetNonZero_LimitZeroNoCap",
+			items:     base,
+			offset:    2,
+			limit:     0,
+			wantSlice: []any{30, 40, 50},
+			wantStart: 2,
+			wantEnd:   5,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotSlice, gotStart, gotEnd := helpers.Slice(tc.items, tc.offset, tc.limit)
+
+			if !reflect.DeepEqual(gotSlice, tc.wantSlice) {
+				t.Errorf("Slice() slice = %v; want %v", gotSlice, tc.wantSlice)
+			}
+			if gotStart != tc.wantStart {
+				t.Errorf("Slice() start = %d; want %d", gotStart, tc.wantStart)
+			}
+			if gotEnd != tc.wantEnd {
+				t.Errorf("Slice() end = %d; want %d", gotEnd, tc.wantEnd)
+			}
+		})
 	}
 }

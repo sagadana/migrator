@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 type RedisStore[V any] struct {
@@ -158,7 +158,7 @@ func NewRedisStore[V any](ctx *context.Context, addr string, password string, db
 		Addr:     addr,
 		Password: password,
 		DB:       db,
-	}).WithContext(*ctx)
+	})
 
 	if err := client.Ping(*ctx).Err(); err != nil {
 		panic(fmt.Errorf("redis connection failed: %w", err))

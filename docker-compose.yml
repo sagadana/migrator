@@ -7,7 +7,9 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg
+      "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
     networks:
       - dev-network
     env_file:
@@ -21,7 +23,9 @@ services:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg
+      "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
     networks:
       - dev-network
     env_file:
@@ -33,13 +37,17 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   tester-pipe:
     build:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg
+      "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
     networks:
       - dev-network
     env_file:
@@ -51,13 +59,28 @@ services:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   tester-helper:
     build:
       context: .
     volumes:
       - .:/usr/src/app
-    command: go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    command:
+      go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg
+      "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    networks:
+      - dev-network
+    env_file:
+      - ./tests/.env.dev
+
+  lint:
+    image: golangci/golangci-lint:latest
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: golangci-lint run
     networks:
       - dev-network
     env_file:
@@ -68,7 +91,7 @@ services:
   # ---------------------
 
   redis:
-    image: "redis:latest"
+    image: 'redis:latest'
     restart: always
     expose:
       - 6379
@@ -91,7 +114,7 @@ services:
 
   # MongoDb Primary Replica
   mongo-a:
-    image: "mongo:latest"
+    image: 'mongo:latest'
     restart: always
     expose:
       - 27017
@@ -108,8 +131,7 @@ services:
       - ./tests/mongo/replica.key:/data/replica.key
     healthcheck:
       test: >
-        mongosh --host localhost --quiet --eval 
-        "try { rs.status().ok } catch (e) { 0 }"
+        mongosh --host localhost --quiet --eval  "try { rs.status().ok } catch (e) { 0 }"
       interval: 10s
       timeout: 5s
       retries: 3
@@ -122,7 +144,7 @@ services:
         exec docker-entrypoint.sh $$@
     command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
   mongo-b:
-    image: "mongo:latest"
+    image: 'mongo:latest'
     restart: always
     expose:
       - 27017
@@ -137,8 +159,7 @@ services:
       - ./tests/mongo/replica.key:/data/replica.key
     healthcheck:
       test: >
-        mongosh --host localhost --quiet --eval 
-        "try { rs.status().ok } catch (e) { 0 }"
+        mongosh --host localhost --quiet --eval  "try { rs.status().ok } catch (e) { 0 }"
       interval: 10s
       timeout: 5s
       retries: 3
@@ -152,8 +173,8 @@ services:
     command: mongod --bind_ip_all --replSet ${MONGO_RS} --keyFile /data/replica.key
   # MongoDb Replica-Set Initializer
   mongo-init:
-    image: "mongo:latest"
-    restart: "no"
+    image: 'mongo:latest'
+    restart: 'no'
     depends_on:
       - mongo-a
       - mongo-b
@@ -176,6 +197,31 @@ services:
         sed -i 's/\r$//' /usr/bin/replica-init.sh # remove windows carriage-returns
         chmod +x /usr/bin/replica-init.sh
         exec /usr/bin/replica-init.sh $$@
+
+  # ---------------------
+  # PostgreSQL
+  # ---------------------
+  postgres:
+    image: 'postgres:latest'
+    restart: always
+    expose:
+      - 5432
+    ports:
+      - ${POSTGRES_PORT}:5432
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASS}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./tests/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+    networks:
+      - dev-network
+    healthcheck:
+      test: pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost -p 5432
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
 
 networks:
   dev-network:

@@ -3,8 +3,11 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sync"
+
+	"github.com/sagadana/migrator/helpers"
 )
 
 // -------------------------------------------------------------------------------
@@ -14,9 +17,11 @@ import (
 type MemoryDatasource struct {
 	name string
 
-	ids     []string
-	idField string
-	data    *sync.Map
+	idField  string
+	isClosed bool
+
+	ids  []string
+	data *sync.Map
 
 	watcher       chan DatasourcePushRequest
 	watcherActive bool
@@ -39,14 +44,19 @@ func clone[T any](src map[string]T) map[string]T {
 	return dst
 }
 
-func (m *MemoryDatasource) getId(data map[string]any) (val string, err error) {
+func (m *MemoryDatasource) getID(data map[string]any) (val string, err error) {
 	id, ok := data[m.idField]
 	if ok {
 		return fmt.Sprintf("%v", id), err
 	}
 	return val, fmt.Errorf("missing '%s' in insert document", m.idField)
 }
+
 func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) uint64 {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	// 1. Determine the raw “total” matching items
 	var total uint64
 	if len(request.IDs) > 0 {
@@ -75,58 +85,39 @@ func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchReq
 	// 4. Otherwise, everything remaining counts
 	return remaining
 }
+
 func (m *MemoryDatasource) Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	// 1. Build base slice of IDs to page through
-	var baseIDs []string
+	var keys []string
 	if len(request.IDs) > 0 {
-		baseIDs = make([]string, 0, len(request.IDs))
-		for _, id := range request.IDs {
+		var id string
+		keys = make([]string, 0, len(request.IDs))
+		for _, id = range request.IDs {
 			if _, exists := m.data.Load(id); exists {
-				baseIDs = append(baseIDs, id)
+				keys = append(keys, id)
 			}
 		}
 	} else {
-		baseIDs = m.ids
+		keys = m.ids
 	}
 
-	total := uint64(len(baseIDs))
-	var start, end uint64
+	// 2. Slice and clone documents
+	ids, start, end := helpers.Slice(keys, request.Offset, request.Size)
 
-	// 2. If offset beyond available entries, return empty result
-	if request.Offset >= total || total == 0 {
-		return DatasourceFetchResult{
-			Docs:  make([]map[string]any, 0),
-			Start: 0,
-			End:   0,
-		}
-	}
-
-	// 3. Compute start index
-	start = request.Offset
-
-	// 4. Determine page size (zero means “no cap”)
-	var pageSize uint64
-	if request.Size == 0 {
-		pageSize = total
-	} else {
-		pageSize = request.Size
-	}
-
-	// 5. Compute exclusive end index, then inclusive end
-	endExcl := min(start+pageSize, total)
-	end = endExcl - 1
-
-	// 6. Slice and clone documents
-	ids := baseIDs[start:endExcl]
+	// 3. Fetch actual documents by key
+	var id string
 	docs := make([]map[string]any, 0, len(ids))
-	for _, id := range ids {
+	for _, id = range ids {
 		if raw, ok := m.data.Load(id); ok {
 			if doc, ok := raw.(map[string]any); ok {
 				docs = append(docs, clone(doc))
 			}
 		}
 	}
-
 	return DatasourceFetchResult{
 		Docs:  docs,
 		Start: start,
@@ -137,34 +128,69 @@ func (m *MemoryDatasource) Fetch(ctx *context.Context, request *DatasourceFetchR
 func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error) {
 
 	count := *new(DatasourcePushCount)
+	event := &DatasourcePushRequest{
+		Inserts: []map[string]any{},
+		Updates: []map[string]any{},
+		Deletes: []string{},
+	}
+
+	var pushErr error
+	var doc map[string]any
+	var id string
+
+	if m.isClosed {
+		return count, ErrDatastoreClosed
+	}
 
 	// Inserts
-	for _, doc := range request.Inserts {
-		id, err := m.getId(doc)
-		if err != nil {
-			return count, err
+	for _, doc = range request.Inserts {
+		if doc == nil {
+			continue
 		}
+
+		id, err := m.getID(doc)
+		if err != nil {
+			pushErr = fmt.Errorf("memory item id error: %w", err)
+			slog.Warn(pushErr.Error())
+			continue
+		}
+
 		m.data.Store(id, clone(doc))
 		count.Inserts++
+		event.Inserts = append(event.Inserts, clone(doc))
 	}
 
 	// Updates
-	for id, fields := range request.Updates {
+	for _, doc = range request.Updates {
+		if doc == nil {
+			continue
+		}
+
+		id, err := m.getID(doc)
+		if err != nil {
+			pushErr = fmt.Errorf("memory item id error: %w", err)
+			slog.Warn(pushErr.Error())
+			continue
+		}
+
 		if existingAny, ok := m.data.Load(id); ok {
 			if existing, ok := existingAny.(map[string]any); ok {
-				maps.Copy(existing, fields)
+				maps.Copy(existing, doc)
 				m.data.Store(id, existing)
 			}
 		} else {
-			m.data.Store(id, fields)
+			m.data.Store(id, doc)
 		}
+
 		count.Updates++
+		event.Updates = append(event.Updates, clone(doc))
 	}
 
 	// Deletes
-	for _, id := range request.Deletes {
+	for _, id = range request.Deletes {
 		m.data.Delete(id)
 		count.Deletes++
+		event.Deletes = append(event.Deletes, id)
 	}
 
 	// Regenerate ids on inserts & deletes
@@ -181,15 +207,19 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 
 	// Notify watchers
 	if m.watcherActive && m.watcher != nil {
-		go func(r DatasourcePushRequest) {
-			m.watcher <- r
-		}(*request)
+		go func(e DatasourcePushRequest) {
+			m.watcher <- e
+		}(*event)
 	}
 
-	return count, nil
+	return count, pushErr
 }
 
 func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
+	if m.isClosed {
+		panic(ErrDatastoreClosed)
+	}
+
 	m.watcherActive = true
 	return StreamChanges(
 		ctx,
@@ -200,7 +230,19 @@ func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStream
 }
 
 func (m *MemoryDatasource) Clear(_ *context.Context) error {
+	if m.isClosed {
+		return ErrDatastoreClosed
+	}
+
 	m.data.Clear()
 	m.ids = make([]string, 0)
+	return nil
+}
+
+func (m *MemoryDatasource) Close(ctx *context.Context) error {
+	m.data = new(sync.Map)
+	m.ids = make([]string, 0)
+	m.isClosed = true
+	m.watcherActive = false
 	return nil
 }

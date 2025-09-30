@@ -11,7 +11,7 @@ RS_NAME="${MONGO_RS}"
 
 echo "###### Waiting for all MongoDB instances to be ready..."
 for host in "${HOSTS[@]}"; do
-  until mongosh --host $host --quiet --eval 'db.runCommand({ ping: 1 }).ok' &>/dev/null; do
+  until mongosh --host "$host" --quiet --eval "db.runCommand({ ping: 1 }).ok" &>/dev/null; do
     echo -n "."
     sleep 1
   done
@@ -19,8 +19,8 @@ for host in "${HOSTS[@]}"; do
 done
 
 echo "###### Checking replica set status..."
-if mongosh --host ${HOSTS[0]} --username $USER --password $PASS --authenticationDatabase admin \
-   --quiet --eval 'rs.status().ok' &>/dev/null; then
+if mongosh --host "${HOSTS[0]}" --username "$USER" --password "$PASS" --authenticationDatabase admin \
+   --quiet --eval "rs.status().ok" &>/dev/null; then
   echo "###### Replica set already initialized"
   exit 0
 fi

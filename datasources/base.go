@@ -2,17 +2,21 @@ package datasources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"time"
 
 	"github.com/sagadana/migrator/helpers"
 )
 
+var (
+	ErrDatastoreClosed = errors.New("datasource closed")
+)
+
 type DatasourcePushRequest struct {
 	Inserts []map[string]any
-	Updates map[string]map[string]any
+	Updates []map[string]any
 	Deletes []string
 }
 
@@ -41,7 +45,6 @@ type DatasourceFetchResult struct {
 }
 
 type DatasourceStreamRequest struct {
-	// TODO: Add support for StartFromTimestamp
 	// Number of items to batch. 0 to disable batching (optional)
 	BatchSize uint64
 	// How long to wait to accumulate batch (optional)
@@ -85,6 +88,8 @@ type Datasource interface {
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult
 	// Clear data source
 	Clear(ctx *context.Context) error
+	// Close data source
+	Close(ctx *context.Context) error
 
 	// Import contents
 	// Import(ctx *context.Context, request DatasourceImportRequest) error
@@ -157,9 +162,9 @@ func StreamChanges(
 		defer ticker.Stop()
 
 		batch := DatasourcePushRequest{
-			Inserts: make([]map[string]any, 0),
-			Updates: make(map[string]map[string]any),
-			Deletes: make([]string, 0),
+			Inserts: []map[string]any{},
+			Updates: []map[string]any{},
+			Deletes: []string{},
 		}
 
 		slog.Info(fmt.Sprintf("Watching %s for changes...", title))
@@ -170,17 +175,23 @@ func StreamChanges(
 				slog.Info(fmt.Sprintf("Closing %s watcher...", title))
 
 				// Watcher closed - Drain channel
+				timer := time.After(time.Duration(batchWindow) * time.Second)
 				for {
 					select {
 					case event := <-watcher:
 						// Drain
-						batch.Inserts = append(batch.Inserts, event.Inserts...)
-						maps.Copy(batch.Updates, event.Updates)
-						batch.Deletes = append(batch.Deletes, event.Deletes...)
-					default:
-						// Wait for batch window before ending
-						<-time.After(time.Duration(batchWindow) * time.Second)
-						// Send remaining batch
+						if event.Inserts != nil {
+							batch.Inserts = append(batch.Inserts, event.Inserts...)
+						}
+						if event.Updates != nil {
+							batch.Updates = append(batch.Updates, event.Updates...)
+						}
+						if event.Deletes != nil {
+							batch.Deletes = append(batch.Deletes, event.Deletes...)
+						}
+
+					case <-timer:
+						// Send remaining batch after waiting for batch window
 						// TODO: Investigate if this could be causing downstream to
 						//   process logic that require context even when it is closed
 						if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
@@ -197,30 +208,34 @@ func StreamChanges(
 					out <- DatasourceStreamResult{Docs: batch}
 					// Reset batch
 					batch = DatasourcePushRequest{
-						Inserts: make([]map[string]any, 0),
-						Updates: make(map[string]map[string]any),
-						Deletes: make([]string, 0),
+						Inserts: []map[string]any{},
+						Updates: []map[string]any{},
+						Deletes: []string{},
 					}
 				}
 
-			case event, ok := <-watcher:
-				if !ok {
-					return
-				}
+			case event := <-watcher:
 
 				// Append items to batch
-				batch.Inserts = append(batch.Inserts, event.Inserts...)
-				maps.Copy(batch.Updates, event.Updates)
-				batch.Deletes = append(batch.Deletes, event.Deletes...)
+				if event.Inserts != nil {
+					batch.Inserts = append(batch.Inserts, event.Inserts...)
+				}
+				if event.Updates != nil {
+					batch.Updates = append(batch.Updates, event.Updates...)
+				}
+				if event.Deletes != nil {
+					batch.Deletes = append(batch.Deletes, event.Deletes...)
+				}
 
 				// Batch full - send batch
-				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) >= int(batchSize) {
+				count := len(batch.Inserts) + len(batch.Updates) + len(batch.Deletes)
+				if count > 0 && count >= int(batchSize) {
 					out <- DatasourceStreamResult{Docs: batch}
 					// Reset batch
 					batch = DatasourcePushRequest{
-						Inserts: make([]map[string]any, 0),
-						Updates: make(map[string]map[string]any),
-						Deletes: make([]string, 0),
+						Inserts: []map[string]any{},
+						Updates: []map[string]any{},
+						Deletes: []string{},
 					}
 					// Reset timer
 					ticker.Reset(time.Duration(batchWindow) * time.Second)

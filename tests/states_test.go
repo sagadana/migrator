@@ -134,22 +134,25 @@ func TestStateJSONRoundTrip(t *testing.T) {
 }
 
 func TestStateStoreLifecycle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Duration(30)*time.Minute) // Max 30 mins
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		cancel()
-	}()
-	slog.SetDefault(helpers.CreateTextLogger()) // Default logger
+	testCtx := context.Background()
 
-	for st := range getTestStates(&ctx) {
+	slog.SetDefault(helpers.CreateTextLogger(slog.LevelDebug)) // Default logger
+
+	for st := range getTestStates(&testCtx) {
 
 		fmt.Println("\n---------------------------------------------------------------------------------")
 		t.Run(st.id, func(t *testing.T) {
 			fmt.Println("---------------------------------------------------------------------------------")
 
+			t.Parallel() // Run states tests in parallel
+
+			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
+			defer cancel()
+
 			// Cleanup after
 			t.Cleanup(func() {
-				st.store.Clear(&ctx)
+				st.store.Clear(&testCtx)
+				st.store.Close(&testCtx)
 			})
 
 			// 1) Loading a missing key should return ok=false

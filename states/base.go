@@ -28,12 +28,13 @@ const (
 )
 
 type State struct {
-	MigrationStatus    MigrationStatusType `json:"migration_status"`
-	MigrationTotal     json.Number         `json:"migration_total"`
-	MigrationOffset    json.Number         `json:"migration_offset"`
-	MigrationIssue     string              `json:"migration_issue"`
-	MigrationStartedAt time.Time           `json:"migration_started_at"`
-	MigrationStoppedAt time.Time           `json:"migration_stopped_at"`
+	MigrationStatus        MigrationStatusType `json:"migration_status"`
+	MigrationEstimateCount json.Number         `json:"migration_estimate_count"`
+	MigrationTotal         json.Number         `json:"migration_total"`
+	MigrationOffset        json.Number         `json:"migration_offset"`
+	MigrationIssue         string              `json:"migration_issue"`
+	MigrationStartedAt     time.Time           `json:"migration_started_at"`
+	MigrationStoppedAt     time.Time           `json:"migration_stopped_at"`
 
 	ReplicationStatus      ReplicationStatusType `json:"replication_status"`
 	ReplicationIssue       string                `json:"replication_issue"`

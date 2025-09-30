@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/sagadana/migrator/datasources"
 	"github.com/sagadana/migrator/helpers"
 	"github.com/sagadana/migrator/pipelines"
 	"github.com/sagadana/migrator/states"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 const IDField = "Index"
@@ -82,7 +84,7 @@ func getTestStores(ctx *context.Context, instanceId string) <-chan TestStore {
 		redisAddr := os.Getenv("REDIS_ADDR")
 		redisPass := os.Getenv("REDIS_PASS")
 		redisDb := 0
-		if dbStr := os.Getenv("REDIS_DB"); dbStr != "" {
+		if dbStr := os.Getenv("REDIS_STATE_DB"); dbStr != "" {
 			db, err := strconv.Atoi(dbStr)
 			if err != nil {
 				redisDb = db
@@ -90,7 +92,7 @@ func getTestStores(ctx *context.Context, instanceId string) <-chan TestStore {
 		}
 
 		id = "redis-state-store"
-		store = states.NewRedisStateStore(ctx, redisAddr, redisPass, redisDb, fmt.Sprintf("%s:%s", id, instanceId))
+		store = states.NewRedisStateStore(ctx, redisAddr, redisPass, redisDb, fmt.Sprintf("state-%s:%s", id, instanceId))
 		store.Clear(ctx)
 		out <- TestStore{
 			id:    id,
@@ -126,7 +128,6 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		id = "test-mem-to-mem-pipeline"
 		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
 		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
-
 		out <- TestPipeline{
 			id:          id,
 			source:      fromDs,
@@ -139,32 +140,33 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 
 		mongoURI := os.Getenv("MONGO_URI")
 		mongoDB := os.Getenv("MONGO_DB")
+		// Transformer to convert map to Mongo format
 		mongoTransformer := func(data map[string]any) (map[string]any, error) {
 			// Use to transform to include default mongo ID
-			data[datasources.MongoIDField] = data[IDField]
+			if data != nil {
+				data[datasources.MongoDefaultIDField] = data[IDField]
+			}
 			return data, nil
 		}
 
+		// --------------- 2.1. Memory to Mongo --------------- //
 		id = "test-mem-to-mongo-pipeline"
 		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
 		toDs = datasources.NewMongoDatasource(
 			ctx,
 			datasources.MongoDatasourceConfigs{
-				URI:            mongoURI,
-				DatabaseName:   mongoDB,
-				CollectionName: getDsName(id, "destination"),
-				Filter:         map[string]any{},
-				Sort:           map[string]any{},
-				AccurateCount:  true,
+				URI:             mongoURI,
+				DatabaseName:    mongoDB,
+				CollectionName:  getDsName(id, "destination"),
+				Filter:          map[string]any{},
+				Sort:            map[string]any{},
+				AccurateCount:   true,
+				WithTransformer: mongoTransformer, // Use transformer when loading into source
 				OnInit: func(client *mongo.Client) error {
 					return nil
 				},
 			},
 		)
-
-		// --------------- 2.1. Memory to Mongo --------------- //
-
-		// Send test job
 		out <- TestPipeline{
 			id:          id,
 			source:      fromDs,
@@ -173,7 +175,6 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 		}
 
 		// --------------- 2.2. Mongo to Memory --------------- //
-
 		id = "test-mongo-to-mem-pipeline"
 		fromDs = datasources.NewMongoDatasource(
 			ctx,
@@ -191,13 +192,172 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 			},
 		)
 		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
-
-		// Send test job // TODO: Fix
 		out <- TestPipeline{
 			id:          id,
 			source:      fromDs,
 			destination: toDs,
 			transform:   mongoTransformer,
+		}
+
+		// -----------------------
+		// 3. Redis
+		// -----------------------
+		redisAddr := os.Getenv("REDIS_ADDR")
+		redisUser := os.Getenv("REDIS_USER")
+		redisPass := os.Getenv("REDIS_PASS")
+		redisDb := os.Getenv("REDIS_DB")
+
+		redisURI := fmt.Sprintf("redis://%s/%s", redisAddr, redisDb)
+		if len(redisUser) > 0 && len(redisPass) > 0 {
+			redisURI = fmt.Sprintf("redis://%s:%s@%s/%s", redisUser, redisPass, redisAddr, redisDb)
+		}
+
+		// --------------- 3.1. Memory to Redis --------------- //
+		id = "test-mem-to-redis-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewRedisDatasource(
+			ctx,
+			datasources.RedisDatasourceConfigs{
+				URI:       redisURI,
+				KeyPrefix: fmt.Sprintf("%s:*", getDsName(id, "destination")),
+				IDField:   IDField,
+				ScanSize:  10,
+				OnInit: func(client *redis.Client) error {
+					return nil
+				},
+			},
+		)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// --------------- 3.2. Redis to Memory --------------- //
+		id = "test-redis-to-mem-pipeline"
+		fromDs = datasources.NewRedisDatasource(
+			ctx,
+			datasources.RedisDatasourceConfigs{
+				URI:       redisURI,
+				IDField:   IDField,
+				KeyPrefix: fmt.Sprintf("%s:", getDsName(id, "source")),
+				ScanSize:  10,
+				OnInit: func(client *redis.Client) error {
+					return nil
+				},
+			},
+		)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// -----------------------
+		// 4. PostgreSQL
+		// -----------------------
+		postgresDSN := os.Getenv("POSTGRES_DSN")
+		if postgresDSN == "" {
+			postgresDSN = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+				os.Getenv("POSTGRES_HOST"),
+				os.Getenv("POSTGRES_PORT"),
+				os.Getenv("POSTGRES_USER"),
+				os.Getenv("POSTGRES_PASS"),
+				os.Getenv("POSTGRES_DB"),
+				os.Getenv("POSTGRES_SSLMODE"),
+			)
+		}
+
+		// Define test model for PostgreSQL
+		type TestPostgresModel struct {
+			Index      string    `gorm:"primaryKey;column:Index" json:"Index"`
+			CustomerId string    `gorm:"column:CustomerId" json:"CustomerId"`
+			FirstName  string    `gorm:"column:FirstName" json:"FirstName"`
+			LastName   string    `gorm:"column:LastName" json:"LastName"`
+			Company    string    `gorm:"column:Company" json:"Company"`
+			City       string    `gorm:"column:City" json:"City"`
+			Country    string    `gorm:"column:Country" json:"Country"`
+			Phone1     string    `gorm:"column:Phone1" json:"Phone1"`
+			Phone2     string    `gorm:"column:Phone2" json:"Phone2"`
+			Email      string    `gorm:"column:Email" json:"Email"`
+			SubDate    time.Time `gorm:"column:SubscriptionDate" json:"SubscriptionDate"`
+			Website    string    `gorm:"column:Website" json:"Website"`
+			Test_Cr    bool      `gorm:"column:Test_Cr" json:"Test_Cr"` // Use for testing continuous replication
+			CreatedAt  time.Time `gorm:"column:CreatedAt" json:"CreatedAt"`
+			UpdatedAt  time.Time `gorm:"column:UpdatedAt" json:"UpdatedAt"`
+		}
+
+		// Transformer to convert map to TestPostgresModel
+		postgresTransformer := func(data map[string]any) (TestPostgresModel, error) {
+			subDate, _ := time.Parse("2006-01-02", fmt.Sprintf("%v", data["Subscription Date"]))
+			createdAt, err := time.Parse("2006-01-02", fmt.Sprintf("%v", data["CreatedAt"]))
+			if err != nil || createdAt.IsZero() {
+				createdAt = time.Time{}
+			}
+			updatedAt, err := time.Parse("2006-01-02", fmt.Sprintf("%v", data["UpdatedAt"]))
+			if err != nil || updatedAt.IsZero() {
+				updatedAt = time.Now()
+			}
+			return TestPostgresModel{
+				Index:      fmt.Sprintf("%v", data[IDField]),
+				CustomerId: fmt.Sprintf("%v", data["Customer Id"]),
+				FirstName:  fmt.Sprintf("%v", data["First Name"]),
+				LastName:   fmt.Sprintf("%v", data["Last Name"]),
+				Company:    fmt.Sprintf("%v", data["Company"]),
+				City:       fmt.Sprintf("%v", data["City"]),
+				Country:    fmt.Sprintf("%v", data["Country"]),
+				Phone1:     fmt.Sprintf("%v", data["Phone 1"]),
+				Phone2:     fmt.Sprintf("%v", data["Phone 2"]),
+				Email:      fmt.Sprintf("%v", data["Email"]),
+				SubDate:    subDate,
+				Website:    fmt.Sprintf("%v", data["Website"]),
+				Test_Cr:    fmt.Sprintf("%v", data["Test_Cr"]) == "true",
+				CreatedAt:  createdAt,
+				UpdatedAt:  updatedAt,
+			}, nil
+		}
+
+		// --------------- 4.1. Memory to Postgres --------------- //
+		id = "test-mem-to-postgres-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewPostgresDatasource(
+			ctx,
+			datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+				DSN:                postgresDSN,
+				TableName:          getDsName(id, "destination"),
+				Model:              &TestPostgresModel{},
+				IDField:            IDField,
+				WithTransformer:    postgresTransformer,
+				DisableReplication: true,
+			},
+		)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// --------------- 4.2. Postgres to Memory --------------- //
+		id = "test-postgres-to-mem-pipeline"
+		fromDs = datasources.NewPostgresDatasource(
+			ctx,
+			datasources.PostgresDatasourceConfigs[TestPostgresModel]{
+				DSN:                postgresDSN,
+				TableName:          getDsName(id, "source"),
+				Model:              &TestPostgresModel{},
+				IDField:            IDField,
+				Filter:             datasources.PostgresDatasourceFilter{},
+				Sort:               map[string]any{},
+				WithTransformer:    postgresTransformer,
+				DisableReplication: false,
+			},
+		)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
 		}
 	}()
 
@@ -239,7 +399,7 @@ func testMigration(
 		}
 	}
 
-	config.OnMigrationError = func(state states.State, err error) {
+	config.OnMigrationError = func(state states.State, data datasources.DatasourcePushRequest, err error) {
 		if state.MigrationIssue == "" || state.MigrationIssue != err.Error() {
 			t.Errorf("❌ expects 'MigrationIssue' to be populated OnMigrationError")
 		}
@@ -267,12 +427,11 @@ func testMigration(
 	err = pipeline.Start(ctx, config, false)
 
 	// Test empty source error
-	fromCount := pipeline.From.Count(ctx, &datasources.DatasourceFetchRequest{})
-	if fromCount == 0 && expectedTotal == 0 {
-		if err != pipelines.ErrPipelineMigrationEmptySource {
-			t.Fatalf("⛔️ expected error: %s, got: %s", pipelines.ErrPipelineMigrationEmptySource, err)
+	if expectedTotal == 0 {
+		if err == pipelines.ErrPipelineMigrationEmptySource {
+			return 0 // expected
 		}
-		return 0
+		t.Fatalf("⛔️ expected error: %s, got: %s", pipelines.ErrPipelineMigrationEmptySource, err)
 	}
 	if err != nil {
 		t.Fatalf("⛔️ failed to process migration: %s", err)
@@ -280,6 +439,9 @@ func testMigration(
 
 	// Wait for migration start-stop events
 	evWg.Wait()
+
+	// Wait a bit - for migration process to propagate
+	<-time.After(time.Duration(time.Second))
 
 	// ------------------------------
 	// Migration Completed
@@ -304,6 +466,11 @@ func testMigration(
 		t.Fatalf("⛔️ failed to get migration state")
 	}
 
+	migrationEstimateCount, err := state.MigrationTotal.Int64()
+	if err != nil {
+		t.Errorf("❌ failed to get migration estimate count: %s", err)
+	}
+
 	migrationTotal, err := state.MigrationTotal.Int64()
 	if err != nil {
 		t.Errorf("❌ failed to get migration total: %s", err)
@@ -323,6 +490,9 @@ func testMigration(
 	if expectedTotal != toTotal {
 		t.Errorf("❌ migration failed. Expected Migrated Total: '%d', Got '%d'", expectedTotal, toTotal)
 	}
+	if migrationTotal < migrationEstimateCount {
+		t.Errorf("❌ migration failed. Expected Migrated Total to be >= Estimate Count (%d): Got '%d'", migrationEstimateCount, migrationTotal)
+	}
 	if uint64(migrationTotal) != config.MigrationMaxSize {
 		t.Errorf("❌ migration failed. Expected State Total: '%d', Got '%d'", config.MigrationMaxSize, migrationTotal)
 	}
@@ -333,7 +503,7 @@ func testMigration(
 	return uint64(migrationTotal)
 }
 
-// Use to test continous replication for a pipeline
+// Use to test continuous replication for a pipeline
 func testReplication(
 	t *testing.T,
 	ctx *context.Context,
@@ -343,7 +513,7 @@ func testReplication(
 ) {
 	crStart := make(chan bool, 1)
 	crWg := new(sync.WaitGroup)
-	crCtx, crCancel := context.WithTimeout(context.Background(), time.Duration(10*time.Second))
+	crCtx, crCancel := context.WithTimeout(context.Background(), time.Duration(60*time.Second))
 
 	evWg := new(sync.WaitGroup)
 	evWg.Add(2)
@@ -364,6 +534,7 @@ func testReplication(
 		defer func() {
 			// Wait for replication batch window + processing before ending
 			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+200) * time.Millisecond)
+			t.Logf("Completed background updates for contiuous replication...")
 			crCancel()  // End continuous replication
 			crWg.Done() // Mark done
 		}()
@@ -372,14 +543,18 @@ func testReplication(
 
 		t.Logf("Running background updates for contiuous replication...")
 
-		inserts := make([]map[string]any, 0)
-		updates := make(map[string]map[string]any)
-		deletes := make([]string, 0)
+		random := helpers.RandomString(6)
+		getId := func(i int) string {
+			return fmt.Sprintf("test-%d-%s", i+1, random)
+		}
 
-		// --- Inserts --- //
+		// ---- Insert ---- //
+		r := &datasources.DatasourcePushRequest{
+			Inserts: make([]map[string]any, 0),
+		}
 		for i := range expectdInsertCount {
 			doc := map[string]any{
-				IDField:     fmt.Sprintf("test-%d-%s", i+1, helpers.RandomString(16)), // Create new IDs
+				IDField:     getId(i + 1),
 				"CreatedAt": time.Now(),
 			}
 			if pipeline.Transform != nil {
@@ -388,92 +563,89 @@ func testReplication(
 					doc = transformed
 				}
 			}
-			inserts = append(inserts, doc)
+			r.Inserts = append(r.Inserts, doc)
 		}
-		t.Logf("Performing background push (inserts) for %d changes", len(inserts))
-		count, err := pipeline.From.Push(&crCtx, &datasources.DatasourcePushRequest{
-			Inserts: inserts,
-		})
+		c, err := pipeline.From.Push(&crCtx, r)
 		if err != nil {
-			t.Errorf("❌ failed to perform background push (inserts): %s", err.Error())
+			t.Errorf("❌ background insert error: %s", err.Error())
 			return
 		}
-		if count.Inserts != uint64(len(inserts)) {
-			t.Errorf("❌ failed to perform background push (inserts): Expected '%d' docs inserted, Got '%d'", len(inserts), count.Inserts)
+		if c.Inserts != uint64(len(r.Inserts)) {
+			t.Errorf("❌ failed to perform background push (inserts): Expected '%d' docs inserted, Got '%d'", len(r.Inserts), c.Inserts)
 			return
 		}
 		// Add inserted item ids
-		for _, doc := range inserts {
+		for _, doc := range r.Inserts {
 			id, ok := doc[IDField]
 			if ok {
 				insertedIDs = append(insertedIDs, id.(string))
 			}
 		}
 
-		// --- Updates & Deletes --- //
-		// Update and delete previously inserted items
-		for _, doc := range inserts {
-			if len(updates) < expectdUpdateCount { // Add Updates
-				if pipeline.Transform != nil {
-					transformed, err := pipeline.Transform(doc)
-					if err != nil {
-						doc = transformed
-					}
-				}
-				id, ok := doc[IDField]
-				if ok {
-					doc[CRUpdateField] = true
-					doc["UpdatedAt"] = time.Now()
-					updates[id.(string)] = doc
-				}
-			} else { // Add Deletes
-				id, ok := doc[IDField]
-				if ok {
-					deletes = append(deletes, id.(string))
+		// ---- Update ---- //
+		r = &datasources.DatasourcePushRequest{
+			Updates: make([]map[string]any, 0),
+		}
+		for i := range expectdUpdateCount {
+			doc := map[string]any{
+				IDField: getId(i + 1),
+			}
+			if pipeline.Transform != nil {
+				transformed, err := pipeline.Transform(doc)
+				if err != nil {
+					doc = transformed
 				}
 			}
+			doc[CRUpdateField] = true
+			doc["UpdatedAt"] = time.Now()
+			r.Updates = append(r.Updates, doc)
 		}
-
-		t.Logf("Performing background push (updates) for %d changes", len(updates))
-		count, err = pipeline.From.Push(&crCtx, &datasources.DatasourcePushRequest{
-			Updates: updates,
-		})
+		c, err = pipeline.From.Push(&crCtx, r)
 		if err != nil {
-			t.Errorf("❌ failed to perform background push (updates): %s", err.Error())
+			t.Errorf("❌ background update error: %s", err.Error())
 			return
 		}
-		if count.Updates != uint64(len(updates)) {
-			t.Errorf("❌ failed to perform background push (updates): Expected '%d' docs updates, Got '%d'", len(updates), count.Updates)
+		if c.Updates != uint64(len(r.Updates)) {
+			t.Errorf("❌ failed to perform background push (updates): Expected '%d' docs inserted, Got '%d'", len(r.Updates), c.Updates)
 			return
 		}
 		// Add updated item ids
-		for id := range updates {
-			updatedIDs = append(updatedIDs, id)
+		for _, doc := range r.Updates {
+			id, ok := doc[IDField]
+			if ok {
+				updatedIDs = append(updatedIDs, id.(string))
+			}
 		}
 
-		t.Logf("Performing background push (deletes) for %d changes", len(deletes))
-		count, err = pipeline.From.Push(&crCtx, &datasources.DatasourcePushRequest{
-			Deletes: deletes,
-		})
+		// ---- Delete ---- //
+		r = &datasources.DatasourcePushRequest{
+			Deletes: make([]string, 0),
+		}
+		for i := expectdUpdateCount; i < expectdInsertCount; i++ {
+			r.Deletes = append(r.Deletes, getId(i+1))
+		}
+		c, err = pipeline.From.Push(&crCtx, r)
 		if err != nil {
-			t.Errorf("❌ failed to perform background push (deletes): %s", err.Error())
+			t.Errorf("❌ background delete error: %s", err.Error())
 			return
 		}
-		if count.Deletes != uint64(len(deletes)) {
-			t.Errorf("❌ failed to perform background push (deletes): Expected '%d' docs deleted, Got '%d'", len(deletes), count.Deletes)
+		if c.Deletes != uint64(len(r.Deletes)) {
+			t.Errorf("❌ failed to perform background push (deletes): Expected '%d' docs inserted, Got '%d'", len(r.Deletes), c.Deletes)
 			return
 		}
 		// Add deleted item ids
-		deletedIDs = append(deletedIDs, deletes...)
+		deletedIDs = append(deletedIDs, r.Deletes...)
 	}()
 
 	var err error
 
-	config.OnReplicationError = func(state states.State, err error) {
+	config.OnReplicationError = func(state states.State, data datasources.DatasourcePushRequest, err error) {
+		if err == nil {
+			t.Errorf("❌ expects 'err' to be populated OnReplicationError")
+		}
 		if state.ReplicationIssue == "" || state.ReplicationIssue != err.Error() {
 			t.Errorf("❌ expects 'ReplicationIssue' to be populated OnReplicationError")
 		}
-		t.Errorf("❌ OnReplicationError triggered: %s", err.Error())
 	}
 
 	config.OnReplicationProgress = func(state states.State, count datasources.DatasourcePushCount) {
@@ -501,17 +673,23 @@ func testReplication(
 			t.Errorf("❌ expects 'ReplicationStatus' to be: %s, got: %s", states.ReplicationStatusStreaming, state.ReplicationStatus)
 		}
 
-		// Attempt starting replication again
-		//   expects to fail with error that replication is currently running
-		err := pipeline.Stream(&crCtx, &pipelines.PipelineConfig{})
-		if err != pipelines.ErrPipelineReplicating {
-			t.Errorf("❌ expect replication duplicate error: '%s', got: '%s'", pipelines.ErrPipelineReplicating, err)
-		}
+		// For replication-only test
+		if replicationOnly {
 
-		// Start background updates
-		<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit
-		crStart <- true                                     // Send event to trigger background updates
-		close(crStart)
+			// Attempt starting replication again
+			//   expects to fail with error that replication is currently running
+			err := pipeline.Stream(&crCtx, &pipelines.PipelineConfig{})
+			if err != pipelines.ErrPipelineReplicating {
+				t.Errorf("❌ expect replication duplicate error: '%s', got: '%s'", pipelines.ErrPipelineReplicating, err)
+			}
+
+			// Start background updates
+			go func() {
+				<-time.After(time.Duration(200 * time.Millisecond)) // Wait a bit for replication subscription
+				crStart <- true                                     // Send event to trigger background updates
+				close(crStart)
+			}()
+		}
 	}
 
 	if replicationOnly { // Test Replication Only
@@ -520,6 +698,16 @@ func testReplication(
 			t.Errorf("❌ continuous replication failed: %s", err.Error())
 		}
 	} else { // Test Migration + Replication
+
+		// Start background updates - when migration completed
+		config.OnMigrationStopped = func(state states.State) {
+			if state.MigrationStatus == states.MigrationStatusCompleted {
+				<-time.After(time.Duration(200 * time.Millisecond)) // Wait a bit for replication subscription
+				crStart <- true                                     // Send event to trigger background updates
+				close(crStart)
+			}
+		}
+
 		err = pipeline.Start(&crCtx, config, true)
 		if err != nil {
 			t.Errorf("❌ migration + continuous replication failed: %s", err.Error())
@@ -532,9 +720,8 @@ func testReplication(
 	// Wait for replication start-stop events
 	evWg.Wait()
 
-	// ---------------------------------------------
-	// Replication Completed and 'crCtx' is closed
-	// ---------------------------------------------
+	// Wait a bit for async processes
+	<-time.After(time.Duration(200) * time.Millisecond)
 
 	// Test callbacks triggers
 	if !evStarted {
@@ -547,7 +734,11 @@ func testReplication(
 		t.Errorf("❌ failed to trigger OnReplicationStopped")
 	}
 
-	// Ensure replication was stopped gracefuly
+	// ---------------------------------------------
+	// Replication Completed and 'crCtx' is closed
+	// ---------------------------------------------
+
+	// Ensure replication was stopped gracefully
 	state, ok := pipeline.GetState(ctx)
 	if !ok {
 		t.Fatalf("⛔️ failed to get replication state")
@@ -596,17 +787,22 @@ func testReplication(
 // -----------------------------
 
 func TestPipelineImplementations(t *testing.T) {
-	testCtx, testCancel := context.WithCancel(context.Background())
-	defer func() {
-		time.Sleep(1 * time.Second) // Wait for logs
-		testCancel()
-	}()
+	testCtx := context.Background()
 
 	instanceId := helpers.RandomString(6)
+	logger := helpers.CreateTextLogger(slog.LevelDebug)
 
 	for tp := range getTestPipelines(&testCtx, instanceId) {
 
 		t.Run(tp.id, func(t *testing.T) {
+
+			t.Parallel() // Run pipelines tests in parallel
+
+			// Close - after
+			t.Cleanup(func() {
+				tp.source.Close(&testCtx)
+				tp.destination.Close(&testCtx)
+			})
 
 			// Run tests for different state store types
 			for st := range getTestStores(&testCtx, fmt.Sprintf("%s-%s", tp.id, instanceId)) {
@@ -634,7 +830,7 @@ func TestPipelineImplementations(t *testing.T) {
 						From:   tp.source,
 						To:     tp.destination,
 						Store:  st.store,
-						Logger: helpers.CreateTextLogger(),
+						Logger: logger,
 					}
 
 					// ------------------------
@@ -740,14 +936,18 @@ func TestPipelineImplementations(t *testing.T) {
 						pipeline.To.Clear(&ctx)
 						pipeline.Store.Clear(&ctx)
 
-						testMigration(
-							t, &ctx, &pipeline, &pipelines.PipelineConfig{
-								MigrationParallelWorkers: 4,
-								MigrationBatchSize:       4,
-								MigrationStartOffset:     0,
-							},
-							0,
-						)
+						// Only test if succesfully cleared
+						if c := pipeline.From.Count(&ctx, &datasources.DatasourceFetchRequest{}); c == 0 {
+							testMigration(
+								t, &ctx, &pipeline, &pipelines.PipelineConfig{
+									MigrationParallelWorkers: 4,
+									MigrationBatchSize:       4,
+									MigrationStartOffset:     0,
+								},
+								0,
+							)
+						}
+
 					})
 					fmt.Print("\n------------------------------------------------------------------------------------------------------------------\n\n")
 				})

@@ -19,7 +19,7 @@ We welcome all contributions, whether it's bug reports, feature suggestions, or 
    Run the following command to install any required dependencies:
 
    ```bash
-   mod tidy
+   go mod tidy
    ```
 
 ## Terminologies

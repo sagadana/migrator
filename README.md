@@ -1,24 +1,40 @@
 # Migrator
 
+<div align="start">
+ <span>
+  <img src="https://img.shields.io/github/v/release/sagadana/migrator?display_name=tag&sort=semver&logo=github&label=version" alt="Release%20by%20tag" />
+  <img src="https://img.shields.io/github/release-date/sagadana/migrator?display_name=tag&sort=semver&logo=github&label=date" alt="Release%20by%20date" />
+  <a href="https://goreportcard.com/report/github.com/sagadana/migrator" target="_blank"><img src="https://goreportcard.com/badge/github.com/sagadana/migrator" alt="Report" /></a>
+  <a href="https://app.codacy.com/gh/sagadana/migrator/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade" target="_blank"><img src="https://app.codacy.com/project/badge/Grade/d1b34caebf6e489da2da791249f38d73" alt="Code%20Quality" /></a>
+  <a href="https://github.com/sagadana/migrator/actions/workflows/codeql.yml" target="_blank"><img src="https://github.com/sagadana/migrator/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" /></a>
+  <a href="https://github.com/sagadana/migrator/actions/workflows/release.yml" target="_blank"><img src="https://github.com/sagadana/migrator/actions/workflows/release.yml/badge.svg" alt="Tests" /></a>
+ </span>
+</div>
+
+<br/>
+
+<div align="start">
 High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
+</div>
 
 ## Features
 
 - **Source transformation**: Modify, rename, delete fields
 - **Auto Resuming**: Resume from the last successful position - if failed
-- **Batch Processing**: Process migration in batches
-- **Parallel Processing**: Break data into chunks and load in parallel
+- **Batch Migration**: Process migration in batches
+- **Parallel Migration**: Break data into chunks and load in parallel
 - **Continuous Replication**: Watch for new changes and replicate them
 
 ## Datasources
 
-| Datasource | Status  | Read(R) / Write(W) | Continuous Replication                 |
-| ---------- | ------- | ------------------ | -------------------------------------- |
-| `Memory`   | ✅      | R/W                | ✅                                     |
-| `MongoDB`  | ✅      | R/W                | ✅ (_with replica set / cluster mode_) |
-| `Redis`    | WIP     | TBC                | TBC                                    |
-| `Postgres` | Planned | TBC                | TBC                                    |
-| `<More>`   | Soon    | TBC                | TBC                                    |
+| Datasource | Status  | Read | Write | Migrate | Replicate                          |
+| ---------- | ------- | ---- | ----- | ------- | ---------------------------------- |
+| `Memory`   | ✅      | ✅   | ✅    | ✅      | ✅                                 |
+| `MongoDB`  | ✅      | ✅   | ✅    | ✅      | ✅ (_with change streams_)         |
+| `Redis`    | ✅      | ✅   | ✅    | ✅      | ✅ (_with keyspace notifications_) |
+| `Postgres` | ✅      | ✅   | ✅    | ✅      | ✅ (_with logical replication_)    |
+| `MySQL`    | Planned | TBC  | TBC   | TBC     | TBC                                |
+| `<More>`   | Soon    | TBC  | TBC   | TBC     | TBC                                |
 
 ## State Stores
 
@@ -106,13 +122,13 @@ func main() {
         ReplicationBatchWindowSecs: 1,
 
         OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
-        OnMigrationError:       func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
 
         OnReplicationStart:     func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnReplicationProgress:  func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
-        OnReplicationError:     func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     }, /*with replication*/ true)
     if err != nil {
@@ -137,7 +153,7 @@ func main() {
 
         OnReplicationStart:     func(state states.State) { /* Add your logic. E.g extra logs */ },
         OnReplicationProgress:  func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
-        OnReplicationError:     func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
+        OnReplicationError:     func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnReplicationStopped:   func(state states.State) { /* Add your logic. E.g extra logs */ },
     })
     if err != nil {
@@ -147,7 +163,15 @@ func main() {
 
 ```
 
-## Test Packages
+## Linting
+
+Run this to catch lint issues
+
+```sh
+ docker compose --env-file ./tests/.env.dev  up lint
+```
+
+## Testing
 
 ### Test States
 
