@@ -279,7 +279,7 @@ func TestStreamCSV(t *testing.T) {
 				path = writeTempFile(t, tt.content)
 			}
 
-			ch, err := helpers.StreamCSV(path, tt.batchSize)
+			ch, err := helpers.StreamReadCSV(path, tt.batchSize)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("⛔️ expected error for path %q, got nil", path)
@@ -721,5 +721,144 @@ func TestSlice(t *testing.T) {
 				t.Errorf("Slice() end = %d; want %d", gotEnd, tc.wantEnd)
 			}
 		})
+	}
+}
+
+func TestStreamWriteCSV(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		headers     []string
+		data        [][]map[string]any
+		expectedCSV string
+		wantErr     bool
+	}{
+		{
+			name:    "basic single batch",
+			headers: []string{"id", "name", "age"},
+			data: [][]map[string]any{
+				{
+					{"id": "1", "name": "Alice", "age": 30},
+					{"id": "2", "name": "Bob", "age": 25},
+				},
+			},
+			expectedCSV: "id,name,age\n1,Alice,30\n2,Bob,25\n",
+		},
+		{
+			name:    "multiple batches",
+			headers: []string{"x", "y"},
+			data: [][]map[string]any{
+				{
+					{"x": "a", "y": "1"},
+				},
+				{
+					{"x": "b", "y": "2"},
+					{"x": "c", "y": "3"},
+				},
+			},
+			expectedCSV: "x,y\na,1\nb,2\nc,3\n",
+		},
+		{
+			name:    "missing fields filled with empty",
+			headers: []string{"col1", "col2", "col3"},
+			data: [][]map[string]any{
+				{
+					{"col1": "val1", "col3": "val3"}, // missing col2
+					{"col1": "val4", "col2": "val5", "col3": "val6"},
+				},
+			},
+			expectedCSV: "col1,col2,col3\nval1,,val3\nval4,val5,val6\n",
+		},
+		{
+			name:        "empty data with headers only",
+			headers:     []string{"h1", "h2"},
+			data:        [][]map[string]any{},
+			expectedCSV: "h1,h2\n",
+		},
+		{
+			name:    "numeric and boolean values",
+			headers: []string{"id", "score", "active"},
+			data: [][]map[string]any{
+				{
+					{"id": 1, "score": 95.5, "active": true},
+					{"id": 2, "score": 88, "active": false},
+				},
+			},
+			expectedCSV: "id,score,active\n1,95.5,true\n2,88,false\n",
+		},
+		{
+			name:    "empty headers",
+			headers: []string{},
+			data: [][]map[string]any{
+				{
+					{"ignored": "value"},
+				},
+			},
+			expectedCSV: "\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create temp directory and file path
+			dir := t.TempDir()
+			path := filepath.Join(dir, "test.csv")
+
+			// Create input channel
+			input := make(chan []map[string]any)
+
+			// Start StreamWriteCSV in goroutine
+			errCh := make(chan error, 1)
+			go func() {
+				defer close(errCh)
+				errCh <- helpers.StreamWriteCSV(path, tt.headers, input)
+			}()
+
+			// Send data batches
+			go func() {
+				defer close(input)
+				for _, batch := range tt.data {
+					input <- batch
+				}
+			}()
+
+			// Wait for completion
+			err := <-errCh
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("⛔️ expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("⛔️ unexpected error: %v", err)
+			}
+
+			// Read and verify the file
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("⛔️ failed to read output file: %v", err)
+			}
+
+			if string(content) != tt.expectedCSV {
+				t.Errorf("❌ got CSV content:\n%q\nwant:\n%q", string(content), tt.expectedCSV)
+			}
+		})
+	}
+}
+
+func TestStreamWriteCSV_InvalidPath(t *testing.T) {
+	t.Parallel()
+
+	// Test with invalid file path
+	input := make(chan []map[string]any)
+	close(input)
+
+	err := helpers.StreamWriteCSV("/invalid/path/that/does/not/exist.csv", []string{"h1"}, input)
+	if err == nil {
+		t.Fatal("⛔️ expected error for invalid path, got nil")
 	}
 }

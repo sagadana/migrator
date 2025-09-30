@@ -311,7 +311,7 @@ func (ds *RedisDatasource) processFetch(ctx *context.Context, keys []string) ([]
 	if err != nil {
 		return docs, err
 	} else if len(cmds) != len(keys) {
-		return docs, fmt.Errorf("failed to fetch redis items for keys")
+		return docs, fmt.Errorf("failed to fetch redis items for keys: %+v", keys)
 	}
 
 	// Process results
@@ -394,11 +394,13 @@ func (ds *RedisDatasource) scanKeyPrefix(ctx *context.Context, offset, limit uin
 		}
 
 		var k string
-		for _, k = range batch {
+		var i int
+		size := uint64(len(ds.keys))
+		for i, k = range batch {
 			_, ok := ds.keyMap[k]
 			if !ok {
 				ds.keys = append(ds.keys, k)
-				ds.keyMap[k] = max(0, uint64(len(ds.keys))-1)
+				ds.keyMap[k] = max(0, size+uint64(i))
 			}
 		}
 
@@ -420,15 +422,17 @@ func (ds *RedisDatasource) Client() *redis.Client {
 func (ds *RedisDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 
 	var total uint64
-	var id string
 
 	if len(request.IDs) > 0 {
-		// If specific IDs requested, count those that exist
-		for _, id = range request.IDs {
-			exists, err := ds.client.Exists(*ctx, ds.getKey(id)).Result()
-			if err == nil && exists == 1 {
-				total++
-			}
+		// If specific IDs requested, check existence in one batch
+		keys := make([]string, len(request.IDs))
+		for i, id := range request.IDs {
+			keys[i] = ds.getKey(id)
+		}
+
+		count, err := ds.client.Exists(*ctx, keys...).Result()
+		if err == nil {
+			total = uint64(count)
 		}
 	} else {
 		if ds.keyPrefix == "" { // No Prefix
@@ -659,30 +663,25 @@ func (ds *RedisDatasource) Clear(ctx *context.Context) error {
 	ds.keysMu.Lock()
 	defer ds.keysMu.Unlock()
 
-	// ---- No Prefix ---- //
-
-	if ds.keyPrefix == "" {
+	if ds.keyPrefix == "" { // No Prefix
 		if err := ds.client.FlushDB(*ctx).Err(); err != nil {
 			return fmt.Errorf("redis error: failed to flush DB: %s", err)
 		}
-		return nil
-	}
+	} else { // With Prefix
+		err := ds.scanKeyPrefix(ctx, 0, 0)
+		if err != nil {
+			return fmt.Errorf("redis error: failed to scan keys for '%s': %s", ds.getKey("*"), err)
+		}
 
-	// ---- With Prefix ----//
-
-	err := ds.scanKeyPrefix(ctx, 0, 0)
-	if err != nil {
-		return fmt.Errorf("redis error: failed to scan keys for '%s': %s", ds.getKey("*"), err)
-	}
-
-	// Delete in batches
-	if len(ds.keys) > 0 {
-		for i := 0; i < len(ds.keys); i += int(ds.scanSize) {
-			end := min(i+int(ds.scanSize), len(ds.keys))
-			batch := ds.keys[i:end]
-			if len(batch) > 0 {
-				if err := ds.client.Del(*ctx, batch...).Err(); err != nil {
-					return err
+		// Delete in batches
+		if len(ds.keys) > 0 {
+			for i := 0; i < len(ds.keys); i += int(ds.scanSize) {
+				end := min(i+int(ds.scanSize), len(ds.keys))
+				batch := ds.keys[i:end]
+				if len(batch) > 0 {
+					if err := ds.client.Del(*ctx, batch...).Err(); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -703,4 +702,24 @@ func (ds *RedisDatasource) Close(ctx *context.Context) error {
 	ds.keyMap = make(map[string]uint64)
 	ds.lastCursor = 0
 	return ds.client.Close()
+}
+
+// Import data into data source
+func (ds *RedisDatasource) Import(ctx *context.Context, request DatasourceImportRequest) error {
+	switch request.Type {
+	case DatasourceImportTypeCSV:
+		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported import type: %s", request.Type)
+	}
+}
+
+// Export data from data source
+func (ds *RedisDatasource) Export(ctx *context.Context, request DatasourceExportRequest) error {
+	switch request.Type {
+	case DatasourceExportTypeCSV:
+		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported export type: %s", request.Type)
+	}
 }

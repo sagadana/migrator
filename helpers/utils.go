@@ -116,8 +116,8 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 	return output
 }
 
-// Stream contents of a CSV File
-func StreamCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
+// Read streams of a CSV File
+func StreamReadCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
 	out := make(chan []map[string]any)
 
 	if batchSize <= 0 {
@@ -182,6 +182,42 @@ func StreamCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
 	}()
 
 	return out, nil
+}
+
+// Save stream of contents to CSV file
+func StreamWriteCSV(path string, headers []string, input <-chan []map[string]any) error {
+	// Create or truncate the file
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Write headers
+	if err := writer.Write(headers); err != nil {
+		return err
+	}
+
+	// Write data
+	for records := range input {
+		for _, record := range records {
+			row := make([]string, len(headers))
+			for i, header := range headers {
+				if val, ok := record[header]; ok {
+					row[i] = fmt.Sprint(val)
+				}
+			}
+			if err := writer.Write(row); err != nil {
+				return err
+			}
+		}
+		writer.Flush()
+	}
+
+	return nil
 }
 
 // Custom sorting function

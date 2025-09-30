@@ -18,10 +18,6 @@ type MongoDatasourceConfigs struct {
 	URI            string
 	DatabaseName   string
 	CollectionName string
-	// ID Field for input JSON. Default is "_id"
-	// Use this if your source data uses a different field name for the unique ID
-	// E.g "id" or "userId"
-	IDField string
 
 	// MongoDB Filter Query
 	Filter map[string]any
@@ -128,16 +124,13 @@ func NewMongoDatasource(ctx *context.Context,
 		}
 	}
 
-	idField := config.IDField
-	if idField == "" {
-		idField = MongoDefaultIDField
-	}
+	client := ConnectToMongoDB(ctx, config)
 
 	ds := &MongoDatasource{
-		client:         ConnectToMongoDB(ctx, config),
+		client:         client,
 		databaseName:   config.DatabaseName,
 		collectionName: config.CollectionName,
-		idField:        idField,
+		idField:        MongoDefaultIDField, // Always use Mongo default ID field internally
 
 		filter:        config.Filter,
 		sort:          mongoSort,
@@ -489,4 +482,24 @@ func (ds *MongoDatasource) Clear(ctx *context.Context) error {
 // Close data source
 func (ds *MongoDatasource) Close(ctx *context.Context) error {
 	return ds.client.Disconnect(*ctx)
+}
+
+// Import data into data source
+func (ds *MongoDatasource) Import(ctx *context.Context, request DatasourceImportRequest) error {
+	switch request.Type {
+	case DatasourceImportTypeCSV:
+		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported import type: %s", request.Type)
+	}
+}
+
+// Export data from data source
+func (ds *MongoDatasource) Export(ctx *context.Context, request DatasourceExportRequest) error {
+	switch request.Type {
+	case DatasourceExportTypeCSV:
+		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported export type: %s", request.Type)
+	}
 }

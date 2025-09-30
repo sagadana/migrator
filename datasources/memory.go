@@ -246,3 +246,28 @@ func (m *MemoryDatasource) Close(ctx *context.Context) error {
 	m.watcherActive = false
 	return nil
 }
+
+func (m *MemoryDatasource) Import(ctx *context.Context, request DatasourceImportRequest) error {
+	if m.isClosed {
+		return ErrDatastoreClosed
+	}
+
+	switch request.Type {
+	case DatasourceImportTypeCSV:
+		return LoadCSV(ctx, m, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported import type: %s", request.Type)
+	}
+}
+
+func (m *MemoryDatasource) Export(ctx *context.Context, request DatasourceExportRequest) error {
+	if m.isClosed {
+		return ErrDatastoreClosed
+	}
+	switch request.Type {
+	case DatasourceExportTypeCSV:
+		return SaveCSV(ctx, m, request.Location, request.BatchSize)
+	default:
+		return fmt.Errorf("unsupported export type: %s", request.Type)
+	}
+}
