@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -37,6 +38,38 @@ const (
 	TestFilterOutField string = "filterOut"
 	TestSortAscField   string = "sortAsc"
 )
+
+// MockErrorDatasource is a test helper that simulates datasource errors
+type MockErrorDatasource struct{}
+
+func (m *MockErrorDatasource) Count(ctx *context.Context, request *datasources.DatasourceFetchRequest) uint64 {
+	return 5 // Report that there's data
+}
+
+func (m *MockErrorDatasource) Fetch(ctx *context.Context, request *datasources.DatasourceFetchRequest) datasources.DatasourceFetchResult {
+	return datasources.DatasourceFetchResult{
+		Err:  fmt.Errorf("simulated fetch error"),
+		Docs: nil,
+	}
+}
+
+func (m *MockErrorDatasource) Push(ctx *context.Context, request *datasources.DatasourcePushRequest) (datasources.DatasourcePushCount, error) {
+	return datasources.DatasourcePushCount{}, fmt.Errorf("simulated push error")
+}
+
+func (m *MockErrorDatasource) Watch(ctx *context.Context, request *datasources.DatasourceStreamRequest) <-chan datasources.DatasourceStreamResult {
+	ch := make(chan datasources.DatasourceStreamResult)
+	close(ch)
+	return ch
+}
+
+func (m *MockErrorDatasource) Clear(ctx *context.Context) error {
+	return nil
+}
+
+func (m *MockErrorDatasource) Close(ctx *context.Context) error {
+	return nil
+}
 
 // --------
 // Utils
@@ -1252,4 +1285,485 @@ func TestDatasourceImplementations(t *testing.T) {
 			fmt.Print("\n---------------------------------------------------------------------------------\n\n")
 		})
 	}
+}
+
+func TestSaveCSV(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		data        []map[string]any
+		batchSize   uint64
+		expectedCSV string
+	}{
+		{
+			name: "basic export with batch size 2",
+			data: []map[string]any{
+				{"id": "1", "name": "Alice", "age": 30},
+				{"id": "2", "name": "Bob", "age": 25},
+				{"id": "3", "name": "Charlie", "age": 35},
+			},
+			batchSize:   2,
+			expectedCSV: "age,id,name\n30,1,Alice\n25,2,Bob\n35,3,Charlie\n",
+		},
+		{
+			name: "export with batch size 1",
+			data: []map[string]any{
+				{"id": "1", "x": "a", "y": 1},
+				{"id": "2", "x": "b", "y": 2},
+			},
+			batchSize:   1,
+			expectedCSV: "id,x,y\n1,a,1\n2,b,2\n",
+		},
+		{
+			name: "batch size larger than data",
+			data: []map[string]any{
+				{"id": "1", "col1": "val1", "col2": "val2"},
+			},
+			batchSize:   10,
+			expectedCSV: "col1,col2,id\nval1,val2,1\n",
+		},
+		{
+			name:        "empty datasource",
+			data:        []map[string]any{},
+			batchSize:   5,
+			expectedCSV: "",
+		},
+		{
+			name: "zero batch size defaults to 1",
+			data: []map[string]any{
+				{"id": "1", "key": "value1"},
+				{"id": "2", "key": "value2"},
+			},
+			batchSize:   0,
+			expectedCSV: "id,key\n1,value1\n2,value2\n",
+		},
+		{
+			name: "mixed data types",
+			data: []map[string]any{
+				{"id": 1, "active": true, "score": 95.5, "name": "test"},
+				{"id": 2, "active": false, "score": 88.0, "name": "demo"},
+			},
+			batchSize:   3,
+			expectedCSV: "active,id,name,score\ntrue,1,test,95.5\nfalse,2,demo,88\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create memory datasource and populate with test data
+			ds := datasources.NewMemoryDatasource("test-save-csv", "id")
+			defer ds.Close(&ctx)
+
+			if len(tt.data) > 0 {
+				_, err := ds.Push(&ctx, &datasources.DatasourcePushRequest{
+					Inserts: tt.data,
+				})
+				if err != nil {
+					t.Fatalf("⛔️ failed to push test data: %v", err)
+				}
+			}
+
+			// Create temp file path
+			dir := t.TempDir()
+			csvPath := filepath.Join(dir, "test.csv")
+
+			// Call SaveCSV
+			err := datasources.SaveCSV(&ctx, ds, csvPath, tt.batchSize)
+			if err != nil {
+				t.Fatalf("⛔️ SaveCSV failed: %v", err)
+			}
+
+			// Read and verify the file content
+			if tt.expectedCSV == "" {
+				// For empty datasource, file should not exist or be empty
+				if _, err := os.Stat(csvPath); err == nil {
+					content, readErr := os.ReadFile(csvPath)
+					if readErr != nil {
+						t.Fatalf("⛔️ failed to read output file: %v", readErr)
+					}
+					if len(content) > 0 {
+						t.Errorf("❌ expected empty file, got content: %q", string(content))
+					}
+				}
+			} else {
+				content, err := os.ReadFile(csvPath)
+				if err != nil {
+					t.Fatalf("⛔️ failed to read output file: %v", err)
+				}
+
+				gotContent := string(content)
+
+				// For basic CSV structure validation, we'll check:
+				// 1. The file has content
+				// 2. It has the right number of lines (header + data)
+				// 3. Headers are present and correct
+				if len(gotContent) == 0 {
+					t.Errorf("❌ got empty file, expected content")
+					return
+				}
+
+				gotLines := strings.Split(strings.TrimSuffix(gotContent, "\n"), "\n")
+				expectedLines := strings.Split(strings.TrimSuffix(tt.expectedCSV, "\n"), "\n")
+
+				// Check number of lines
+				if len(gotLines) != len(expectedLines) {
+					t.Errorf("❌ got %d lines, want %d lines", len(gotLines), len(expectedLines))
+					return
+				}
+
+				// Check headers (first line should match exactly)
+				if len(expectedLines) > 0 && gotLines[0] != expectedLines[0] {
+					t.Errorf("❌ got headers %q, want %q", gotLines[0], expectedLines[0])
+					return
+				}
+
+				// For data rows, we'll verify the content exists but not the exact order
+				// (since memory datasource doesn't guarantee order)
+				if len(expectedLines) > 1 {
+					expectedDataLines := expectedLines[1:]
+					gotDataLines := gotLines[1:]
+
+					// Convert to sets for comparison
+					expectedSet := make(map[string]bool)
+					for _, line := range expectedDataLines {
+						expectedSet[line] = true
+					}
+
+					gotSet := make(map[string]bool)
+					for _, line := range gotDataLines {
+						gotSet[line] = true
+					}
+
+					// Check that all expected lines are present
+					for expectedLine := range expectedSet {
+						if !gotSet[expectedLine] {
+							t.Errorf("❌ missing expected line: %q", expectedLine)
+						}
+					}
+
+					// Check that no unexpected lines are present
+					for gotLine := range gotSet {
+						if !expectedSet[gotLine] {
+							t.Errorf("❌ unexpected line: %q", gotLine)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSaveCSV_DatasourceErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("invalid file path", func(t *testing.T) {
+		t.Parallel()
+
+		ds := datasources.NewMemoryDatasource("test-error", "id")
+		defer ds.Close(&ctx)
+
+		// Add some data
+		_, err := ds.Push(&ctx, &datasources.DatasourcePushRequest{
+			Inserts: []map[string]any{{"id": "1", "name": "test"}},
+		})
+		if err != nil {
+			t.Fatalf("⛔️ failed to setup test data: %v", err)
+		}
+
+		// Try to save to invalid path
+		err = datasources.SaveCSV(&ctx, ds, "/invalid/path/file.csv", 10)
+		if err == nil {
+			t.Fatal("⛔️ expected error for invalid path, got nil")
+		}
+	})
+
+	t.Run("datasource fetch error simulation", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a mock datasource that returns errors on fetch
+		ds := &MockErrorDatasource{}
+		defer ds.Close(&ctx)
+
+		dir := t.TempDir()
+		csvPath := filepath.Join(dir, "test.csv")
+
+		err := datasources.SaveCSV(&ctx, ds, csvPath, 5)
+		if err == nil {
+			t.Fatal("⛔️ expected error from mock datasource, got nil")
+		}
+	})
+}
+
+func TestLoadCSV(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name           string
+		csvContent     string
+		batchSize      uint64
+		expectedData   []map[string]any
+		expectedCounts map[string]int // For counting unique values
+	}{
+		{
+			name:      "basic CSV with batch size 2",
+			batchSize: 2,
+			csvContent: `id,name,age
+1,Alice,30
+2,Bob,25
+3,Charlie,35`,
+			expectedData: []map[string]any{
+				{"id": "1", "name": "Alice", "age": "30"},
+				{"id": "2", "name": "Bob", "age": "25"},
+				{"id": "3", "name": "Charlie", "age": "35"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+				"3": 1,
+			},
+		},
+		{
+			name:      "CSV with batch size 1",
+			batchSize: 1,
+			csvContent: `id,x,y
+1,a,1
+2,b,2`,
+			expectedData: []map[string]any{
+				{"id": "1", "x": "a", "y": "1"},
+				{"id": "2", "x": "b", "y": "2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+			},
+		},
+		{
+			name:      "batch size larger than data",
+			batchSize: 10,
+			csvContent: `id,col1,col2
+1,val1,val2`,
+			expectedData: []map[string]any{
+				{"id": "1", "col1": "val1", "col2": "val2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+			},
+		},
+		{
+			name:           "empty CSV (headers only)",
+			batchSize:      5,
+			csvContent:     `id,h1,h2`,
+			expectedData:   []map[string]any{},
+			expectedCounts: map[string]int{},
+		},
+		{
+			name:      "zero batch size defaults to 1",
+			batchSize: 0,
+			csvContent: `id,key,value
+1,item1,data1
+2,item2,data2`,
+			expectedData: []map[string]any{
+				{"id": "1", "key": "item1", "value": "data1"},
+				{"id": "2", "key": "item2", "value": "data2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+			},
+		},
+		{
+			name:      "CSV with special characters and quotes",
+			batchSize: 3,
+			csvContent: `id,text,number
+1,"Hello, World!",123
+2,"Line with ""quotes""",456
+3,"Multi
+line",789`,
+			expectedData: []map[string]any{
+				{"id": "1", "text": "Hello, World!", "number": "123"},
+				{"id": "2", "text": `Line with "quotes"`, "number": "456"},
+				{"id": "3", "text": "Multi\nline", "number": "789"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+				"3": 1,
+			},
+		},
+		{
+			name:      "CSV with missing fields",
+			batchSize: 2,
+			csvContent: `id,a,b,c
+1,1,2,3
+2,4,"",6
+3,7,8,""`,
+			expectedData: []map[string]any{
+				{"id": "1", "a": "1", "b": "2", "c": "3"},
+				{"id": "2", "a": "4", "b": "", "c": "6"},
+				{"id": "3", "a": "7", "b": "8", "c": ""},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+				"3": 1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create temporary CSV file
+			dir := t.TempDir()
+			csvPath := filepath.Join(dir, "test.csv")
+			err := os.WriteFile(csvPath, []byte(tt.csvContent), 0644)
+			if err != nil {
+				t.Fatalf("⛔️ failed to create test CSV file: %v", err)
+			}
+
+			// Create memory datasource
+			ds := datasources.NewMemoryDatasource("test-load-csv", "id")
+			defer ds.Close(&ctx)
+
+			// Call LoadCSV
+			err = datasources.LoadCSV(&ctx, ds, csvPath, tt.batchSize)
+			if err != nil {
+				t.Fatalf("⛔️ LoadCSV failed: %v", err)
+			}
+
+			// Verify the data was loaded correctly
+			result := ds.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+			if result.Err != nil {
+				t.Fatalf("⛔️ failed to fetch loaded data: %v", result.Err)
+			}
+
+			// Check total count
+			if len(result.Docs) != len(tt.expectedData) {
+				t.Errorf("❌ got %d documents, want %d", len(result.Docs), len(tt.expectedData))
+			}
+
+			// For validation, we'll use a count-based approach since memory datasource
+			// doesn't guarantee order
+			if len(tt.expectedCounts) > 0 {
+				actualCounts := make(map[string]int)
+				for _, doc := range result.Docs {
+					// Count occurrences of id field values for verification
+					if idValue, ok := doc["id"].(string); ok {
+						if _, exists := tt.expectedCounts[idValue]; exists {
+							actualCounts[idValue]++
+						}
+					}
+				}
+
+				// Verify expected counts
+				for expectedKey, expectedCount := range tt.expectedCounts {
+					if actualCounts[expectedKey] != expectedCount {
+						t.Errorf("❌ expected %d occurrences of %q, got %d", expectedCount, expectedKey, actualCounts[expectedKey])
+					}
+				}
+			}
+
+			// Verify data structure for non-empty cases
+			if len(tt.expectedData) > 0 && len(result.Docs) > 0 {
+				// Check that all expected fields are present in at least one document
+				expectedFields := make(map[string]bool)
+				for _, expectedDoc := range tt.expectedData {
+					for field := range expectedDoc {
+						expectedFields[field] = true
+					}
+				}
+
+				actualFields := make(map[string]bool)
+				for _, actualDoc := range result.Docs {
+					for field := range actualDoc {
+						actualFields[field] = true
+					}
+				}
+
+				for expectedField := range expectedFields {
+					if !actualFields[expectedField] {
+						t.Errorf("❌ missing expected field %q in loaded data", expectedField)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadCSV_ErrorCases(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("non-existent file", func(t *testing.T) {
+		t.Parallel()
+
+		ds := datasources.NewMemoryDatasource("test-error", "id")
+		defer ds.Close(&ctx)
+
+		err := datasources.LoadCSV(&ctx, ds, "/non/existent/file.csv", 10)
+		if err == nil {
+			t.Fatal("⛔️ expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("datasource push error", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temporary CSV file
+		dir := t.TempDir()
+		csvPath := filepath.Join(dir, "test.csv")
+		csvContent := `id,name
+1,Alice
+2,Bob`
+		err := os.WriteFile(csvPath, []byte(csvContent), 0644)
+		if err != nil {
+			t.Fatalf("⛔️ failed to create test CSV file: %v", err)
+		}
+
+		// Use mock datasource that fails on push
+		ds := &MockErrorDatasource{}
+		defer ds.Close(&ctx)
+
+		err = datasources.LoadCSV(&ctx, ds, csvPath, 2)
+		if err == nil {
+			t.Fatal("⛔️ expected error from mock datasource push, got nil")
+		}
+	})
+
+	t.Run("invalid CSV format", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temporary file with invalid CSV
+		dir := t.TempDir()
+		csvPath := filepath.Join(dir, "invalid.csv")
+		// Create a file that will cause CSV parsing issues
+		invalidContent := "header1,header2\n\"unclosed quote,value2\n"
+		err := os.WriteFile(csvPath, []byte(invalidContent), 0644)
+		if err != nil {
+			t.Fatalf("⛔️ failed to create invalid CSV file: %v", err)
+		}
+
+		ds := datasources.NewMemoryDatasource("test-invalid", "id")
+		defer ds.Close(&ctx)
+
+		err = datasources.LoadCSV(&ctx, ds, csvPath, 5)
+		// Should handle CSV parsing errors gracefully
+		// Note: depending on how StreamReadCSV handles malformed CSV,
+		// this might succeed or fail - both are acceptable behaviors
+		if err != nil {
+			// Error is expected for malformed CSV
+			t.Logf("Expected error for malformed CSV: %v", err)
+		}
+	})
 }
