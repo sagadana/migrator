@@ -63,6 +63,16 @@ type PostgresDatasourceConfigs[T any] struct {
 	PublicationName     string
 	ReplicationSlotName string
 	DisableReplication  bool
+
+	// Connection pool settings
+	DBMaxIdleConns    int
+	DBMaxOpenConns    int
+	DBMaxConnLifetime time.Duration
+
+	// Whether to disable auto-migration of the table schema
+	// Use this if you want to manage the table schema manually
+	//   or if the table already exists with a different schema
+	DisableAutoMigrate bool
 }
 
 type PostgresDatasource[T any] struct {
@@ -114,10 +124,9 @@ func ConnectToPostgreSQL[T any](ctx *context.Context, config PostgresDatasourceC
 	}
 
 	// Configure connection pool
-	// TODO: Make these configurable
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetMaxOpenConns(1000)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetMaxIdleConns(max(config.DBMaxIdleConns, 2))
+	sqlDB.SetMaxOpenConns(max(config.DBMaxOpenConns, 100))
+	sqlDB.SetConnMaxLifetime(max(config.DBMaxConnLifetime, time.Hour))
 
 	return db
 }
@@ -152,8 +161,10 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 	db := ConnectToPostgreSQL(ctx, config)
 
 	// Auto-migrate the table
-	if err := db.Table(config.TableName).AutoMigrate(config.Model); err != nil {
-		panic(fmt.Errorf("postgres datasource: failed to auto-migrate table %s: %w", config.TableName, err))
+	if !config.DisableAutoMigrate {
+		if err := db.Table(config.TableName).AutoMigrate(config.Model); err != nil {
+			panic(fmt.Errorf("postgres datasource: failed to auto-migrate table %s: %w", config.TableName, err))
+		}
 	}
 
 	// Parse the schema for the model struct
