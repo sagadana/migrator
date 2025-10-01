@@ -99,8 +99,8 @@ func main() {
         MigrationBatchSize:          10,
 
         OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
-        OnMigrationError:       func(state states.State, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
     }, /*with replication*/ false)
     if err != nil {
@@ -128,8 +128,8 @@ func main() {
         ReplicationBatchWindowSecs: 1,
 
         OnMigrationStart:       func(state states.State) { /* Add your logic. E.g extra logs */ },
-        OnMigrationError:       func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationProgress:    func(state states.State, count pipelines.DatasourcePushCount) { /* Add your logic. E.g extra logs */ },
+        OnMigrationError:       func(state states.State, data datasources.DatasourcePushRequest, err error) { /* Add your logic. E.g extra logs */ },
         OnMigrationStopped:     func(state states.State) { /* Add your logic. E.g extra logs */ },
 
         OnReplicationStart:     func(state states.State) { /* Add your logic. E.g extra logs */ },
