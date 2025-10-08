@@ -402,7 +402,6 @@ func StreamChanges(
 							batchInserts = nil
 							batchUpdates = nil
 							batchDeletes = nil
-							seenHashes = nil
 						}
 						return
 					}
