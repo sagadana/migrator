@@ -118,10 +118,8 @@ func TestParallelBatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var (
-				mu    *sync.Mutex
-				calls []jobCall
-			)
+			calls := make([]jobCall, 0)
+			mu := new(sync.Mutex)
 
 			// Wrap the fn to capture calls
 			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id int, size, offset uint64) {

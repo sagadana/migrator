@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/go-mysql-org/go-mysql/canal"
 	"github.com/go-mysql-org/go-mysql/mysql"
@@ -682,8 +681,8 @@ func (ds *MySQLDatasource[T]) setupCanal() (*canal.Canal, error) {
 	}
 
 	// Set event handler
-	c.SetEventHandler(&MySQLEventHandler{
-		ds: (*MySQLDatasource[any])(unsafe.Pointer(ds)),
+	c.SetEventHandler(&MySQLEventHandler[T]{
+		ds: ds,
 	})
 
 	return c, nil
@@ -713,12 +712,12 @@ func (ds *MySQLDatasource[T]) getConnectionInfo() MySQLConnectionInfo {
 }
 
 // MySQLEventHandler handles MySQL binlog events
-type MySQLEventHandler struct {
-	ds *MySQLDatasource[any] // Use any since we can't use generics in struct embedding
+type MySQLEventHandler[T any] struct {
+	ds *MySQLDatasource[T] // Use any since we can't use generics in struct embedding
 }
 
 // OnRow handles row-level binlog events
-func (h *MySQLEventHandler) OnRow(e *canal.RowsEvent) error {
+func (h *MySQLEventHandler[T]) OnRow(e *canal.RowsEvent) error {
 	// Check if this event is for our table
 	if e.Table.Name != h.ds.tableName {
 		return nil
@@ -782,17 +781,17 @@ func (h *MySQLEventHandler) OnRow(e *canal.RowsEvent) error {
 }
 
 // OnTableChanged handles table structure changes
-func (h *MySQLEventHandler) OnTableChanged(header *replication.EventHeader, schema, table string) error {
+func (h *MySQLEventHandler[T]) OnTableChanged(header *replication.EventHeader, schema, table string) error {
 	return nil
 }
 
 // OnDDL handles DDL events
-func (h *MySQLEventHandler) OnDDL(header *replication.EventHeader, nextPos mysql.Position, queryEvent *replication.QueryEvent) error {
+func (h *MySQLEventHandler[T]) OnDDL(header *replication.EventHeader, nextPos mysql.Position, queryEvent *replication.QueryEvent) error {
 	return nil
 }
 
 // OnRotate handles binlog rotation events
-func (h *MySQLEventHandler) OnRotate(header *replication.EventHeader, e *replication.RotateEvent) error {
+func (h *MySQLEventHandler[T]) OnRotate(header *replication.EventHeader, e *replication.RotateEvent) error {
 	// Update position
 	h.ds.binlogPosition = mysql.Position{
 		Name: string(e.NextLogName),
@@ -802,35 +801,35 @@ func (h *MySQLEventHandler) OnRotate(header *replication.EventHeader, e *replica
 }
 
 // OnPosSynced handles position sync events
-func (h *MySQLEventHandler) OnPosSynced(header *replication.EventHeader, pos mysql.Position, set mysql.GTIDSet, force bool) error {
+func (h *MySQLEventHandler[T]) OnPosSynced(header *replication.EventHeader, pos mysql.Position, set mysql.GTIDSet, force bool) error {
 	h.ds.binlogPosition = pos
 	return nil
 }
 
 // OnXID handles transaction commit events
-func (h *MySQLEventHandler) OnXID(header *replication.EventHeader, nextPos mysql.Position) error {
+func (h *MySQLEventHandler[T]) OnXID(header *replication.EventHeader, nextPos mysql.Position) error {
 	// Update position
 	h.ds.binlogPosition = nextPos
 	return nil
 }
 
 // OnGTID handles GTID events
-func (h *MySQLEventHandler) OnGTID(header *replication.EventHeader, gtid mysql.BinlogGTIDEvent) error {
+func (h *MySQLEventHandler[T]) OnGTID(header *replication.EventHeader, gtid mysql.BinlogGTIDEvent) error {
 	return nil
 }
 
 // OnRowsQueryEvent handles rows query events
-func (h *MySQLEventHandler) OnRowsQueryEvent(e *replication.RowsQueryEvent) error {
+func (h *MySQLEventHandler[T]) OnRowsQueryEvent(e *replication.RowsQueryEvent) error {
 	return nil
 }
 
 // String returns string representation
-func (h *MySQLEventHandler) String() string {
+func (h *MySQLEventHandler[T]) String() string {
 	return "MySQLEventHandler"
 }
 
 // parseRow converts a binlog row to map[string]any
-func (h *MySQLEventHandler) parseRow(table *schema.Table, row []any) map[string]any {
+func (h *MySQLEventHandler[T]) parseRow(table *schema.Table, row []any) map[string]any {
 	if len(row) != len(table.Columns) {
 		return nil
 	}

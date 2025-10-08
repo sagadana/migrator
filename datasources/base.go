@@ -2,7 +2,7 @@ package datasources
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -308,7 +308,7 @@ func StreamChanges(
 		}
 		// Include name in the hash to make it unique per stream
 		hashData := append(docBytes, []byte(name)...)
-		hash := sha1.Sum(hashData)
+		hash := sha256.Sum256(hashData)
 		return hex.EncodeToString(hash[:])
 	}
 
@@ -316,7 +316,7 @@ func StreamChanges(
 	calculateDeleteHash := func(id string) string {
 		// Include title in the hash to make it unique per stream
 		hashData := append([]byte(id), []byte(name)...)
-		hash := sha1.Sum(hashData)
+		hash := sha256.Sum256(hashData)
 		return hex.EncodeToString(hash[:])
 	}
 
