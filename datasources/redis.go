@@ -105,6 +105,12 @@ type RedisDatasource struct {
 	keyMap     map[string]uint64
 	keysMu     *sync.Mutex // For synchronizing keys manipulation
 	lastCursor uint64
+
+	keyEventSubRunning bool
+	keyEventSubMutex   *sync.Mutex
+
+	// Watcher channel
+	watcher chan DatasourcePushRequest
 }
 
 // Connect to Redis
@@ -154,6 +160,11 @@ func NewRedisDatasource(ctx *context.Context, config RedisDatasourceConfigs) *Re
 		keys:   make([]string, 0),
 		keyMap: make(map[string]uint64),
 		keysMu: new(sync.Mutex),
+
+		keyEventSubRunning: false,
+		keyEventSubMutex:   new(sync.Mutex),
+
+		watcher: make(chan DatasourcePushRequest, DefaultWatcherBufferSize),
 
 		transformer: config.WithTransformer,
 	}
@@ -603,57 +614,68 @@ func (ds *RedisDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 // Listen to keyspace notifications if available
 func (ds *RedisDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
-	watcher := make(chan DatasourcePushRequest)
 
-	// Subscribe to keyspace notifications
-	pubsub := ds.client.PSubscribe(*ctx,
-		RedisKeyspacePattern+ds.getKey("*"), // Key events
-	)
+	// Ensure only one subscription is running
+	ds.keyEventSubMutex.Lock()
+	defer ds.keyEventSubMutex.Unlock()
+	if !ds.keyEventSubRunning {
+		ds.keyEventSubRunning = true
 
-	// Convert redis key event to Datasource Push Request
-	processEvent := func(msg *redis.Message) DatasourcePushRequest {
-		updates, deletes := []map[string]any{}, []string{}
-		key := strings.SplitN(msg.Channel, ":", 2)[1]
+		// Convert redis key event to Datasource Push Request
+		processEvent := func(msg *redis.Message) DatasourcePushRequest {
+			updates, deletes := []map[string]any{}, []string{}
+			key := strings.SplitN(msg.Channel, ":", 2)[1]
 
-		switch msg.Payload {
-		case "del": // Process delete
-			deletes = append(deletes, key)
+			switch msg.Payload {
+			case "del": // Process delete
+				deletes = append(deletes, key)
 
-		default: // Process others as updates
-			docs, err := ds.processFetch(ctx, []string{key})
-			if err != nil {
-				updates = append(updates, nil)
-			} else if len(docs) > 0 {
-				updates = append(updates, docs...)
+			default: // Process others as updates
+				docs, err := ds.processFetch(ctx, []string{key})
+				if err == nil && len(docs) > 0 {
+					updates = append(updates, docs...)
+				}
+			}
+
+			return DatasourcePushRequest{
+				Updates: updates,
+				Deletes: deletes,
 			}
 		}
 
-		return DatasourcePushRequest{
-			Updates: updates,
-			Deletes: deletes,
-		}
+		// Subscribe to keyspace notifications
+		pubsub := ds.client.PSubscribe(*ctx,
+			RedisKeyspacePattern+ds.getKey("*"), // Key events
+		)
+
+		// Process redis key events in the background
+		go func(bgCtx context.Context) {
+			defer func() {
+				ds.keyEventSubMutex.Lock()
+				if pubsub != nil && ds.keyEventSubRunning {
+					pubsub.Close()
+				}
+				ds.keyEventSubRunning = false
+				ds.keyEventSubMutex.Unlock()
+			}()
+
+			for {
+				select {
+				case <-bgCtx.Done():
+					return
+
+				case msg := <-pubsub.Channel():
+					ds.watcher <- processEvent(msg)
+				}
+			}
+		}(*ctx)
 	}
 
-	// Process redis key events in the background
-	go func(bgCtx context.Context) {
-		defer close(watcher)
-		defer pubsub.Close()
-
-		for {
-			select {
-			case <-bgCtx.Done():
-				return
-
-			case msg := <-pubsub.Channel():
-				watcher <- processEvent(msg)
-			}
-		}
-	}(*ctx)
-
+	// Return stream changes channel
 	return StreamChanges(
 		ctx,
 		fmt.Sprintf("redis keys matching pattern '%s'", ds.getKey("*")),
-		watcher,
+		ds.watcher,
 		request,
 	)
 }
@@ -701,6 +723,10 @@ func (ds *RedisDatasource) Close(ctx *context.Context) error {
 	ds.keys = make([]string, 0)
 	ds.keyMap = make(map[string]uint64)
 	ds.lastCursor = 0
+
+	// Close watcher channel
+	close(ds.watcher)
+
 	return ds.client.Close()
 }
 

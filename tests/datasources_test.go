@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/sagadana/migrator/helpers"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 type TestDatasource struct {
@@ -306,6 +308,105 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 				},
 			),
 		}
+
+		// -----------------------
+		// 5. MySQL
+		// -----------------------
+		mysqlDSN := os.Getenv("MYSQL_DSN")
+		if mysqlDSN == "" {
+			mysqlDSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+				os.Getenv("MYSQL_USER"),
+				os.Getenv("MYSQL_PASS"),
+				os.Getenv("MYSQL_HOST"),
+				os.Getenv("MYSQL_PORT"),
+				os.Getenv("MYSQL_DB"),
+			)
+		}
+
+		// ---------------------- Simple Model  -----------------------
+
+		// Define test model for MySQL
+		type TestSimpleMySQLModel struct {
+			ID     string `gorm:"primaryKey;column:id" json:"id"`
+			FieldA string `gorm:"column:fieldA" json:"fieldA"`
+			FieldB string `gorm:"column:fieldB" json:"fieldB"`
+		}
+
+		id = "mysql-simple-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			source: datasources.NewMySQLDatasource(
+				ctx,
+				datasources.MySQLDatasourceConfigs[TestSimpleMySQLModel]{
+					DSN:       mysqlDSN,
+					TableName: getDsName(id),
+					Model:     &TestSimpleMySQLModel{},
+					IDField:   TestIDField,
+
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					DisableReplication: false,
+				},
+			),
+		}
+
+		// ---------------------- Complex Model -----------------------
+
+		// Define test model for MySQL
+		type TestComplexMySQLModel struct {
+			ID        string    `gorm:"primaryKey;column:id" json:"id"`
+			FieldA    string    `gorm:"column:fieldA" json:"fieldA"`
+			FieldB    string    `gorm:"column:fieldB" json:"fieldB"`
+			FilterOut bool      `gorm:"column:filterOut" json:"filterOut"`
+			SortAsc   int       `gorm:"type:int;column:sortAsc" json:"sortAsc"`
+			CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+			UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
+		}
+
+		id = "mysql-complex-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      true,
+			withWatchFilter: false,
+			withSort:        true,
+			source: datasources.NewMySQLDatasource(
+				ctx,
+				datasources.MySQLDatasourceConfigs[TestComplexMySQLModel]{
+					DSN:       mysqlDSN,
+					TableName: getDsName(id),
+					Model:     &TestComplexMySQLModel{},
+					IDField:   TestIDField,
+					Filter: datasources.MySQLDatasourceFilter{
+						Query:  fmt.Sprintf("`%s` = ?", TestFilterOutField),
+						Params: []any{false},
+					},
+					Sort: map[string]any{
+						TestSortAscField: 1, // 1 = Ascending, -1 = Descending
+					},
+
+					WithTransformer: func(data map[string]any) (TestComplexMySQLModel, error) {
+						s, _ := strconv.Atoi(fmt.Sprintf("%v", data[TestSortAscField]))
+						return TestComplexMySQLModel{
+							ID:        fmt.Sprintf("%v", data[TestIDField]),
+							FieldA:    fmt.Sprintf("%v", data[TestAField]),
+							FieldB:    fmt.Sprintf("%v", data[TestBField]),
+							FilterOut: data[TestFilterOutField] == true,
+							SortAsc:   s,
+						}, nil
+					},
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					DisableReplication: false,
+				},
+			),
+		}
 	}()
 
 	return out
@@ -315,11 +416,89 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 // Tests
 // --------
 
+// compareBatches compares two slices of DatasourcePushRequest for equality
+// considering that the order of elements within slices might vary due to deduplication
+func compareBatches(got, expected []datasources.DatasourcePushRequest) bool {
+	if len(got) != len(expected) {
+		return false
+	}
+
+	for i := range got {
+		if !compareSingleBatch(got[i], expected[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// compareSingleBatch compares two DatasourcePushRequest structs
+// allowing for different ordering within the slices
+func compareSingleBatch(got, expected datasources.DatasourcePushRequest) bool {
+	// Compare inserts (order may vary)
+	if !compareMapSlices(got.Inserts, expected.Inserts) {
+		return false
+	}
+
+	// Compare updates (order may vary)
+	if !compareMapSlices(got.Updates, expected.Updates) {
+		return false
+	}
+
+	// Compare deletes (order may vary)
+	if !compareStringSlices(got.Deletes, expected.Deletes) {
+		return false
+	}
+
+	return true
+}
+
+// compareMapSlices compares two slices of maps allowing for different order
+func compareMapSlices(got, expected []map[string]any) bool {
+	if len(got) != len(expected) {
+		return false
+	}
+
+	// Convert to string representations for easier comparison
+	gotStrs := make([]string, len(got))
+	expectedStrs := make([]string, len(expected))
+
+	for i, m := range got {
+		gotStrs[i] = fmt.Sprintf("%v", m)
+	}
+	for i, m := range expected {
+		expectedStrs[i] = fmt.Sprintf("%v", m)
+	}
+
+	// Sort both slices
+	sort.Strings(gotStrs)
+	sort.Strings(expectedStrs)
+
+	return reflect.DeepEqual(gotStrs, expectedStrs)
+}
+
+// compareStringSlices compares two string slices allowing for different order
+func compareStringSlices(got, expected []string) bool {
+	if len(got) != len(expected) {
+		return false
+	}
+
+	gotCopy := make([]string, len(got))
+	expectedCopy := make([]string, len(expected))
+	copy(gotCopy, got)
+	copy(expectedCopy, expected)
+
+	sort.Strings(gotCopy)
+	sort.Strings(expectedCopy)
+
+	return reflect.DeepEqual(gotCopy, expectedCopy)
+}
+
 // TestStreamChanges covers the main behaviors of StreamChanges:
 // 1. immediate flush when batchSize is reached
 // 2. periodic flush when batchWindowSeconds elapses
 // 3. draining remaining events on context cancellation
 // 4. no output when no events arrive and watcher closes
+// 5. deduplication of insert, update, and delete events per batch
 func TestStreamChanges(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +603,187 @@ func TestStreamChanges(t *testing.T) {
 			cancelContextAfterSend: false,
 			expectedBatches:        []datasources.DatasourcePushRequest{},
 		},
+		{
+			name: "deduplication of identical inserts in batch",
+			events: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: nil,
+					Deletes: nil,
+				},
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}}, // Duplicate
+					Updates: nil,
+					Deletes: nil,
+				},
+				{
+					Inserts: []map[string]any{{"id": "2", "name": "Bob"}},
+					Updates: nil,
+					Deletes: nil,
+				},
+			},
+			request: datasources.DatasourceStreamRequest{
+				BatchSize:          10, // Large batch to accumulate all events
+				BatchWindowSeconds: 1,
+			},
+			sendEventsCloseWatcher: true,
+			cancelContextAfterSend: false,
+			expectedBatches: []datasources.DatasourcePushRequest{
+				{
+					// Only unique inserts should remain
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}},
+					Updates: []map[string]any{},
+					Deletes: []string{},
+				},
+			},
+		},
+		{
+			name: "deduplication of identical updates in batch",
+			events: []datasources.DatasourcePushRequest{
+				{
+					Inserts: nil,
+					Updates: []map[string]any{{"id": "1", "name": "Alice", "age": 30}},
+					Deletes: nil,
+				},
+				{
+					Inserts: nil,
+					Updates: []map[string]any{{"id": "1", "name": "Alice", "age": 30}}, // Duplicate
+					Deletes: nil,
+				},
+				{
+					Inserts: nil,
+					Updates: []map[string]any{{"id": "2", "name": "Bob", "age": 25}},
+					Deletes: nil,
+				},
+			},
+			request: datasources.DatasourceStreamRequest{
+				BatchSize:          10,
+				BatchWindowSeconds: 1,
+			},
+			sendEventsCloseWatcher: true,
+			cancelContextAfterSend: false,
+			expectedBatches: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{},
+					Updates: []map[string]any{{"id": "1", "name": "Alice", "age": 30}, {"id": "2", "name": "Bob", "age": 25}},
+					Deletes: []string{},
+				},
+			},
+		},
+		{
+			name: "deduplication of identical deletes in batch",
+			events: []datasources.DatasourcePushRequest{
+				{
+					Inserts: nil,
+					Updates: nil,
+					Deletes: []string{"id1"},
+				},
+				{
+					Inserts: nil,
+					Updates: nil,
+					Deletes: []string{"id1"}, // Duplicate
+				},
+				{
+					Inserts: nil,
+					Updates: nil,
+					Deletes: []string{"id2"},
+				},
+			},
+			request: datasources.DatasourceStreamRequest{
+				BatchSize:          10,
+				BatchWindowSeconds: 1,
+			},
+			sendEventsCloseWatcher: true,
+			cancelContextAfterSend: false,
+			expectedBatches: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{},
+					Updates: []map[string]any{},
+					Deletes: []string{"id1", "id2"},
+				},
+			},
+		},
+		{
+			name: "mixed operations with deduplication",
+			events: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: []map[string]any{{"id": "2", "name": "Bob", "age": 25}},
+					Deletes: []string{"id3"},
+				},
+				{
+					// Duplicate insert, update, and delete
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: []map[string]any{{"id": "2", "name": "Bob", "age": 25}},
+					Deletes: []string{"id3"},
+				},
+				{
+					// New unique operations
+					Inserts: []map[string]any{{"id": "4", "name": "Charlie"}},
+					Updates: []map[string]any{{"id": "5", "name": "David", "age": 35}},
+					Deletes: []string{"id6"},
+				},
+			},
+			request: datasources.DatasourceStreamRequest{
+				BatchSize:          20,
+				BatchWindowSeconds: 1,
+			},
+			sendEventsCloseWatcher: true,
+			cancelContextAfterSend: false,
+			expectedBatches: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}, {"id": "4", "name": "Charlie"}},
+					Updates: []map[string]any{{"id": "2", "name": "Bob", "age": 25}, {"id": "5", "name": "David", "age": 35}},
+					Deletes: []string{"id3", "id6"},
+				},
+			},
+		},
+		{
+			name: "no deduplication across multiple batches",
+			events: []datasources.DatasourcePushRequest{
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: nil,
+					Deletes: nil,
+				},
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}}, // Duplicate - should trigger batch
+					Updates: nil,
+					Deletes: nil,
+				},
+				{
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}}, // Same as before but new batch
+					Updates: nil,
+					Deletes: nil,
+				},
+			},
+			request: datasources.DatasourceStreamRequest{
+				BatchSize:          1, // Force each event into separate batches
+				BatchWindowSeconds: 10,
+			},
+			sendEventsCloseWatcher: true,
+			cancelContextAfterSend: false,
+			expectedBatches: []datasources.DatasourcePushRequest{
+				{
+					// First unique insert
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: []map[string]any{},
+					Deletes: []string{},
+				},
+				{
+					// Third event creates second batch (second was duplicate but still triggers new batch)
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: []map[string]any{},
+					Deletes: []string{},
+				},
+				{
+					// Third event creates third batch
+					Inserts: []map[string]any{{"id": "1", "name": "Alice"}},
+					Updates: []map[string]any{},
+					Deletes: []string{},
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -463,30 +823,35 @@ func TestStreamChanges(t *testing.T) {
 				}
 
 			case tc.sendEventsCloseWatcher:
-				// We know only ticker-based flushes will emit
+				// Wait for events to be processed and batches to be emitted
 				<-time.After(time.Duration(tc.request.BatchWindowSeconds+1) * time.Second)
 
-				// Read exactly expected count
-				for i := 0; i < len(tc.expectedBatches); i++ {
+				// Read all available batches with timeout
+				timeout := time.After(3 * time.Second)
+				for len(got) < len(tc.expectedBatches) {
 					select {
 					case r := <-results:
 						got = append(got, r.Docs)
-					case <-time.After(2 * time.Second):
-						t.Fatalf("⛔️ timed out waiting for batch %d", i)
+					case <-timeout:
+						// Break if we've waited too long
+						goto validateResults
 					}
 				}
-			}
 
-			// Ensure no extra batches
-			select {
-			case extra := <-results:
-				if len(extra.Docs.Inserts)+len(extra.Docs.Updates)+len(extra.Docs.Deletes) > 0 {
-					t.Errorf("❌ received unexpected extra batch %+v", extra)
+				// Check for any unexpected extra batches
+				select {
+				case extra := <-results:
+					if len(extra.Docs.Inserts)+len(extra.Docs.Updates)+len(extra.Docs.Deletes) > 0 {
+						got = append(got, extra.Docs)
+					}
+				case <-time.After(100 * time.Millisecond):
+					// No extra batches - good
 				}
-			default:
 			}
 
-			if !reflect.DeepEqual(got, tc.expectedBatches) {
+		validateResults:
+			// For deduplication tests, we need to compare content more carefully
+			if !compareBatches(got, tc.expectedBatches) {
 				t.Errorf("❌ got batches %#v\nexpected %#v", got, tc.expectedBatches)
 			}
 		})
@@ -499,7 +864,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 	testCtx := context.Background()
 
-	slog.SetDefault(helpers.CreateTextLogger(slog.LevelDebug)) // Default logger
+	slog.SetDefault(helpers.CreateTextLogger(slog.LevelWarn)) // Default logger
 
 	instanceId := helpers.RandomString(6)
 
@@ -720,9 +1085,10 @@ func TestDatasourceImplementations(t *testing.T) {
 				evDel := 2
 				evIns := evUpd + evDel
 				evCnt := evIns + evUpd + evDel
+				batchWin := uint64(1)
 
 				// 1) Test watch: fire background pushes
-				streamReq := &datasources.DatasourceStreamRequest{BatchSize: uint64(evCnt), BatchWindowSeconds: 1}
+				streamReq := &datasources.DatasourceStreamRequest{BatchSize: uint64(evCnt), BatchWindowSeconds: batchWin}
 				watchCtx, watchCancel := context.WithTimeout(ctx, time.Duration(30)*time.Second)
 				watchCh := td.source.Watch(&watchCtx, streamReq)
 
@@ -749,6 +1115,8 @@ func TestDatasourceImplementations(t *testing.T) {
 					expInsert += c.Inserts
 					wg.Done()
 
+					<-time.After(time.Duration(200) * time.Millisecond) // wait a bit
+
 					// Update
 					r = &datasources.DatasourcePushRequest{
 						Updates: make([]map[string]any, 0),
@@ -767,6 +1135,8 @@ func TestDatasourceImplementations(t *testing.T) {
 					}
 					expUpdate += c.Updates
 					wg.Done()
+
+					<-time.After(time.Duration((batchWin*1000)+400) * time.Millisecond) // wait for watch batch window before deleting
 
 					// Delete
 					r = &datasources.DatasourcePushRequest{
@@ -828,6 +1198,153 @@ func TestDatasourceImplementations(t *testing.T) {
 				// Verify deletes
 				if gotDelete != expDelete {
 					t.Errorf("❌ watch deletes: expected %d, got %d", expDelete, gotDelete)
+				}
+			})
+
+			t.Run("Test_Watch_Multiple_Workers", func(t *testing.T) {
+
+				td.source.Clear(&ctx)
+				<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
+
+				const numWorkers = 3
+				const numEvents = 5
+				const watchTimeout = 15 * time.Second
+
+				// Setup test context with timeout
+				testCtx, testCancel := context.WithTimeout(ctx, watchTimeout)
+				defer testCancel()
+
+				// Track events from multiple watchers
+				var wg sync.WaitGroup
+				eventCounts := make([]int, numWorkers)
+				allEvents := make([][]datasources.DatasourceStreamResult, numWorkers)
+				mu := new(sync.Mutex)
+
+				// Start multiple watchers
+				watchCtx, watchCancel := context.WithCancel(testCtx)
+				defer watchCancel()
+
+				for i := range numWorkers {
+					wg.Add(1)
+					go func(workerID int) {
+						defer wg.Done()
+
+						// Create watch request
+						streamReq := &datasources.DatasourceStreamRequest{
+							BatchSize:          1,
+							BatchWindowSeconds: 1,
+						}
+
+						stream := td.source.Watch(&watchCtx, streamReq)
+						count := 0
+						events := make([]datasources.DatasourceStreamResult, 0)
+
+						for {
+							select {
+							case event, ok := <-stream:
+								if !ok {
+									// Stream closed
+									mu.Lock()
+									eventCounts[workerID] = count
+									allEvents[workerID] = events
+									mu.Unlock()
+									return
+								}
+
+								count++
+								events = append(events, event)
+
+							case <-watchCtx.Done():
+								mu.Lock()
+								eventCounts[workerID] = count
+								allEvents[workerID] = events
+								mu.Unlock()
+								return
+							}
+						}
+					}(i)
+				}
+
+				// Give watchers time to start
+				time.Sleep(500 * time.Millisecond)
+
+				// Insert test data to generate events
+				for i := 1; i <= numEvents; i++ {
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: fmt.Sprintf("worker-test-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+						},
+					}
+					_, err := td.source.Push(&testCtx, &data)
+					if err != nil {
+						t.Errorf("❌ Failed to insert test data %d: %v", i, err)
+					}
+					time.Sleep(100 * time.Millisecond) // Small delay between inserts
+				}
+
+				// Wait a bit for events to propagate, then cancel watchers
+				time.Sleep(1000 * time.Millisecond)
+				watchCancel()
+
+				// Wait for all watchers to finish
+				wg.Wait()
+
+				// Analyze results
+				mu.Lock()
+				defer mu.Unlock()
+
+				totalEvents := 0
+				for _, count := range eventCounts {
+					totalEvents += count
+				}
+				if totalEvents != numEvents {
+					t.Errorf("❌ Total events mismatch: expected %d, got %d", numEvents, totalEvents)
+				}
+
+				// Verify that workers are sharing the load (not all workers need to receive events)
+				workersWithEvents := 0
+				for _, count := range eventCounts {
+					if count > 0 {
+						workersWithEvents++
+					}
+				}
+				if workersWithEvents != numWorkers {
+					t.Errorf("❌ Not all workers received events: %d out of %d", workersWithEvents, numWorkers)
+				}
+
+				// Verify total event count matches expectations (workers share the processing)
+				expectedTotal := numEvents
+				if totalEvents == 0 {
+					t.Error("❌ No events were received by any worker!")
+				} else if totalEvents < expectedTotal {
+					t.Errorf("❌ Some events were missed: got %d, expected %d", totalEvents, expectedTotal)
+				} else if totalEvents > expectedTotal {
+					t.Errorf("❌ More events received than expected: got %d, expected %d (duplicate events detected)", totalEvents, expectedTotal)
+				}
+
+				// Verify event content consistency
+				allSeenIDs := make(map[string]int) // Track how many times each ID was seen
+				for _, events := range allEvents {
+					for _, event := range events {
+						// Merge insert IDs and update IDs - for upsert scenarios
+						mergeIDs := append(event.Docs.Inserts, event.Docs.Updates...)
+						for _, insert := range mergeIDs {
+							if idVal, ok := insert[TestIDField]; ok {
+								idStr := fmt.Sprintf("%v", idVal)
+								allSeenIDs[idStr]++
+							}
+						}
+					}
+				}
+
+				// Check that we saw each expected ID exactly once across all workers
+				for i := 1; i <= numEvents; i++ {
+					expectedID := fmt.Sprintf("worker-test-%d", i)
+					if count, exists := allSeenIDs[expectedID]; !exists {
+						t.Errorf("❌ Expected ID %s was not seen by any worker", expectedID)
+					} else if count != 1 {
+						t.Errorf("❌ ID %s was seen %d times across all workers (expected exactly 1 for shared processing)", expectedID, count)
+					}
 				}
 			})
 
@@ -1611,12 +2128,9 @@ func TestLoadCSV(t *testing.T) {
 		expectedCounts map[string]int // For counting unique values
 	}{
 		{
-			name:      "basic CSV with batch size 2",
-			batchSize: 2,
-			csvContent: `id,name,age
-1,Alice,30
-2,Bob,25
-3,Charlie,35`,
+			name:       "basic CSV with batch size 2",
+			batchSize:  2,
+			csvContent: "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35",
 			expectedData: []map[string]any{
 				{"id": "1", "name": "Alice", "age": "30"},
 				{"id": "2", "name": "Bob", "age": "25"},
@@ -1629,11 +2143,9 @@ func TestLoadCSV(t *testing.T) {
 			},
 		},
 		{
-			name:      "CSV with batch size 1",
-			batchSize: 1,
-			csvContent: `id,x,y
-1,a,1
-2,b,2`,
+			name:       "CSV with batch size 1",
+			batchSize:  1,
+			csvContent: "id,x,y\n1,a,1\n2,b,2",
 			expectedData: []map[string]any{
 				{"id": "1", "x": "a", "y": "1"},
 				{"id": "2", "x": "b", "y": "2"},
@@ -1644,10 +2156,9 @@ func TestLoadCSV(t *testing.T) {
 			},
 		},
 		{
-			name:      "batch size larger than data",
-			batchSize: 10,
-			csvContent: `id,col1,col2
-1,val1,val2`,
+			name:       "batch size larger than data",
+			batchSize:  10,
+			csvContent: "id,col1,col2\n1,val1,val2",
 			expectedData: []map[string]any{
 				{"id": "1", "col1": "val1", "col2": "val2"},
 			},
@@ -1663,11 +2174,9 @@ func TestLoadCSV(t *testing.T) {
 			expectedCounts: map[string]int{},
 		},
 		{
-			name:      "zero batch size defaults to 1",
-			batchSize: 0,
-			csvContent: `id,key,value
-1,item1,data1
-2,item2,data2`,
+			name:       "zero batch size defaults to 1",
+			batchSize:  0,
+			csvContent: "id,key,value\n1,item1,data1\n2,item2,data2",
 			expectedData: []map[string]any{
 				{"id": "1", "key": "item1", "value": "data1"},
 				{"id": "2", "key": "item2", "value": "data2"},
@@ -1678,13 +2187,9 @@ func TestLoadCSV(t *testing.T) {
 			},
 		},
 		{
-			name:      "CSV with special characters and quotes",
-			batchSize: 3,
-			csvContent: `id,text,number
-1,"Hello, World!",123
-2,"Line with ""quotes""",456
-3,"Multi
-line",789`,
+			name:       "CSV with special characters and quotes",
+			batchSize:  3,
+			csvContent: "id,text,number\n1,\"Hello, World!\",123\n2,\"Line with \"\"quotes\"\"\",456\n3,\"Multi\nline\",789",
 			expectedData: []map[string]any{
 				{"id": "1", "text": "Hello, World!", "number": "123"},
 				{"id": "2", "text": `Line with "quotes"`, "number": "456"},
@@ -1697,12 +2202,9 @@ line",789`,
 			},
 		},
 		{
-			name:      "CSV with missing fields",
-			batchSize: 2,
-			csvContent: `id,a,b,c
-1,1,2,3
-2,4,"",6
-3,7,8,""`,
+			name:       "CSV with missing fields",
+			batchSize:  2,
+			csvContent: "id,a,b,c\n1,1,2,3\n2,4,\"\",6\n3,7,8,\"\"",
 			expectedData: []map[string]any{
 				{"id": "1", "a": "1", "b": "2", "c": "3"},
 				{"id": "2", "a": "4", "b": "", "c": "6"},
@@ -1820,9 +2322,7 @@ func TestLoadCSV_ErrorCases(t *testing.T) {
 		// Create temporary CSV file
 		dir := t.TempDir()
 		csvPath := filepath.Join(dir, "test.csv")
-		csvContent := `id,name
-1,Alice
-2,Bob`
+		csvContent := "id,name\n1,Alice\n2,Bob"
 		err := os.WriteFile(csvPath, []byte(csvContent), 0644)
 		if err != nil {
 			t.Fatalf("⛔️ failed to create test CSV file: %v", err)
@@ -1861,6 +2361,558 @@ func TestLoadCSV_ErrorCases(t *testing.T) {
 		if err != nil {
 			// Error is expected for malformed CSV
 			t.Logf("Expected error for malformed CSV: %v", err)
+		}
+	})
+}
+
+func TestParseGormFieldValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		field       *schema.Field
+		input       any
+		expected    any
+		expectError bool
+		errorMsg    string
+	}{
+		// String field tests
+		{
+			name:        "string field with string input",
+			field:       &schema.Field{Name: "name", DataType: schema.String},
+			input:       "hello world",
+			expected:    "hello world",
+			expectError: false,
+		},
+		{
+			name:        "string field with JSON string input",
+			field:       &schema.Field{Name: "data", DataType: schema.String},
+			input:       `{"key":"value","number":123}`,
+			expected:    map[string]any{"key": "value", "number": float64(123)},
+			expectError: false,
+		},
+		{
+			name:        "string field with invalid JSON string",
+			field:       &schema.Field{Name: "data", DataType: schema.String},
+			input:       `{"invalid":json}`,
+			expected:    `{"invalid":json}`,
+			expectError: false,
+		},
+		{
+			name:        "string field with byte slice JSON",
+			field:       &schema.Field{Name: "data", DataType: schema.String},
+			input:       []byte(`{"test":"value"}`),
+			expected:    map[string]any{"test": "value"},
+			expectError: false,
+		},
+		{
+			name:        "string field with byte slice non-JSON",
+			field:       &schema.Field{Name: "data", DataType: schema.String},
+			input:       []byte("plain text"),
+			expected:    "plain text",
+			expectError: false,
+		},
+
+		// Bool field tests
+		{
+			name:        "bool field with bool input",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       true,
+			expected:    true,
+			expectError: false,
+		},
+		{
+			name:        "bool field with string true",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       "true",
+			expected:    true,
+			expectError: false,
+		},
+		{
+			name:        "bool field with string false",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       "false",
+			expected:    false,
+			expectError: false,
+		},
+		{
+			name:        "bool field with string 1",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       "1",
+			expected:    true,
+			expectError: false,
+		},
+		{
+			name:        "bool field with string 0",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       "0",
+			expected:    false,
+			expectError: false,
+		},
+		{
+			name:        "bool field with invalid string",
+			field:       &schema.Field{Name: "active", DataType: schema.Bool},
+			input:       "invalid",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for bool field",
+		},
+
+		// Float field tests
+		{
+			name:        "float field with float64 input",
+			field:       &schema.Field{Name: "price", DataType: schema.Float},
+			input:       123.456,
+			expected:    123.456,
+			expectError: false,
+		},
+		{
+			name:        "float field with float32 input",
+			field:       &schema.Field{Name: "price", DataType: schema.Float},
+			input:       float32(123.456),
+			expected:    float64(float32(123.456)), // Account for float32 precision loss
+			expectError: false,
+		},
+		{
+			name:        "float field with string input",
+			field:       &schema.Field{Name: "price", DataType: schema.Float},
+			input:       "123.456",
+			expected:    123.456,
+			expectError: false,
+		},
+		{
+			name:        "float field with int input",
+			field:       &schema.Field{Name: "price", DataType: schema.Float},
+			input:       123,
+			expected:    123.0,
+			expectError: false,
+		},
+		{
+			name:        "float field with invalid string",
+			field:       &schema.Field{Name: "price", DataType: schema.Float},
+			input:       "not-a-number",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for float field",
+		},
+
+		// Time field tests
+		{
+			name:        "time field with time.Time input",
+			field:       &schema.Field{Name: "created_at", DataType: schema.Time},
+			input:       time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
+			expected:    time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
+			expectError: false,
+		},
+		{
+			name:        "time field with RFC3339 string",
+			field:       &schema.Field{Name: "created_at", DataType: schema.Time},
+			input:       "2023-01-01T12:00:00Z",
+			expected:    time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
+			expectError: false,
+		},
+		{
+			name:        "time field with RFC3339Nano string",
+			field:       &schema.Field{Name: "created_at", DataType: schema.Time},
+			input:       "2023-01-01T12:00:00.123456789Z",
+			expected:    time.Date(2023, 1, 1, 12, 0, 0, 123456789, time.UTC),
+			expectError: false,
+		},
+		{
+			name:        "time field with custom format",
+			field:       &schema.Field{Name: "created_at", DataType: schema.Time},
+			input:       "2023-01-01 12:00:00.000000+00",
+			expected:    time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
+			expectError: false,
+		},
+		{
+			name:        "time field with invalid string",
+			field:       &schema.Field{Name: "created_at", DataType: schema.Time},
+			input:       "invalid-time",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for time field",
+		},
+
+		// Int field tests
+		{
+			name:        "int field with int64 input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       int64(123),
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with int input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       123,
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with int32 input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       int32(123),
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with int16 input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       int16(123),
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with int8 input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       int8(123),
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with string input",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       "123",
+			expected:    int64(123),
+			expectError: false,
+		},
+		{
+			name:        "int field with negative string",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       "-123",
+			expected:    int64(-123),
+			expectError: false,
+		},
+		{
+			name:        "int field with invalid string",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       "not-a-number",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for int field",
+		},
+
+		// Uint field tests
+		{
+			name:        "uint field with uint64 input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       uint64(123),
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with uint input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       uint(123),
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with uint32 input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       uint32(123),
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with uint16 input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       uint16(123),
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with uint8 input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       uint8(123),
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with string input",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       "123",
+			expected:    uint64(123),
+			expectError: false,
+		},
+		{
+			name:        "uint field with negative string",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       "-123",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for uint field",
+		},
+		{
+			name:        "uint field with invalid string",
+			field:       &schema.Field{Name: "id", DataType: schema.Uint},
+			input:       "not-a-number",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for uint field",
+		},
+
+		// Bytes field tests
+		{
+			name:        "bytes field with byte slice input",
+			field:       &schema.Field{Name: "data", DataType: schema.Bytes},
+			input:       []byte("hello world"),
+			expected:    []byte("hello world"),
+			expectError: false,
+		},
+		{
+			name:        "bytes field with string input",
+			field:       &schema.Field{Name: "data", DataType: schema.Bytes},
+			input:       "hello world",
+			expected:    []byte("hello world"),
+			expectError: false,
+		},
+		{
+			name:        "bytes field with invalid input",
+			field:       &schema.Field{Name: "data", DataType: schema.Bytes},
+			input:       123,
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "invalid value type for bytes field",
+		},
+
+		// Nil value tests
+		{
+			name:        "nil value with string field",
+			field:       &schema.Field{Name: "name", DataType: schema.String},
+			input:       nil,
+			expected:    nil,
+			expectError: false,
+		},
+		{
+			name:        "nil value with int field",
+			field:       &schema.Field{Name: "count", DataType: schema.Int},
+			input:       nil,
+			expected:    nil,
+			expectError: false,
+		},
+
+		// Unsupported field type test
+		{
+			name:        "unsupported field type",
+			field:       &schema.Field{Name: "unknown", DataType: schema.DataType("unknown")},
+			input:       "value",
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "unsupported field type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := datasources.ParseGormFieldValue(tt.field, tt.input)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("⛔️ expected error but got none")
+				}
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("⛔️ expected error message to contain '%s', but got: %v", tt.errorMsg, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("⛔️ unexpected error: %v", err)
+			}
+
+			// Special handling for time comparison due to potential timezone differences
+			if expectedTime, ok := tt.expected.(time.Time); ok {
+				if resultTime, ok := result.(time.Time); ok {
+					if !expectedTime.Equal(resultTime) {
+						t.Errorf("⛔️ expected time %v, got %v", expectedTime, resultTime)
+					}
+					return
+				}
+			}
+
+			// Special handling for byte slice comparison
+			if expectedBytes, ok := tt.expected.([]byte); ok {
+				if resultBytes, ok := result.([]byte); ok {
+					if !reflect.DeepEqual(expectedBytes, resultBytes) {
+						t.Errorf("⛔️ expected bytes %v, got %v", expectedBytes, resultBytes)
+					}
+					return
+				}
+			}
+
+			// General comparison
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("⛔️ expected %v (type %T), got %v (type %T)", tt.expected, tt.expected, result, result)
+			}
+		})
+	}
+}
+
+// TestParseGormFieldValue_EdgeCases tests edge cases and specific scenarios
+func TestParseGormFieldValue_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("float precision edge cases", func(t *testing.T) {
+		t.Parallel()
+
+		field := &schema.Field{Name: "value", DataType: schema.Float}
+
+		// Test very large numbers
+		result, err := datasources.ParseGormFieldValue(field, "1.7976931348623157e+308")
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for large float: %v", err)
+		}
+		if result != 1.7976931348623157e+308 {
+			t.Errorf("⛔️ expected large float to be parsed correctly")
+		}
+
+		// Test very small numbers
+		result, err = datasources.ParseGormFieldValue(field, "2.2250738585072014e-308")
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for small float: %v", err)
+		}
+		if result != 2.2250738585072014e-308 {
+			t.Errorf("⛔️ expected small float to be parsed correctly")
+		}
+	})
+
+	t.Run("int overflow edge cases", func(t *testing.T) {
+		t.Parallel()
+
+		field := &schema.Field{Name: "value", DataType: schema.Int}
+
+		// Test maximum int64 value
+		maxInt64 := "9223372036854775807"
+		result, err := datasources.ParseGormFieldValue(field, maxInt64)
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for max int64: %v", err)
+		}
+		if result != int64(9223372036854775807) {
+			t.Errorf("⛔️ expected max int64 to be parsed correctly")
+		}
+
+		// Test minimum int64 value
+		minInt64 := "-9223372036854775808"
+		result, err = datasources.ParseGormFieldValue(field, minInt64)
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for min int64: %v", err)
+		}
+		if result != int64(-9223372036854775808) {
+			t.Errorf("⛔️ expected min int64 to be parsed correctly")
+		}
+
+		// Test overflow
+		overflow := "9223372036854775808" // max int64 + 1
+		_, err = datasources.ParseGormFieldValue(field, overflow)
+		if err == nil {
+			t.Fatalf("⛔️ expected error for int64 overflow")
+		}
+	})
+
+	t.Run("uint overflow edge cases", func(t *testing.T) {
+		t.Parallel()
+
+		field := &schema.Field{Name: "value", DataType: schema.Uint}
+
+		// Test maximum uint64 value
+		maxUint64 := "18446744073709551615"
+		result, err := datasources.ParseGormFieldValue(field, maxUint64)
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for max uint64: %v", err)
+		}
+		if result != uint64(18446744073709551615) {
+			t.Errorf("⛔️ expected max uint64 to be parsed correctly")
+		}
+
+		// Test overflow
+		overflow := "18446744073709551616" // max uint64 + 1
+		_, err = datasources.ParseGormFieldValue(field, overflow)
+		if err == nil {
+			t.Fatalf("⛔️ expected error for uint64 overflow")
+		}
+	})
+
+	t.Run("complex JSON in string field", func(t *testing.T) {
+		t.Parallel()
+
+		field := &schema.Field{Name: "data", DataType: schema.String}
+
+		// Test nested JSON
+		complexJSON := `{
+			"user": {
+				"id": 123,
+				"name": "John Doe",
+				"preferences": {
+					"theme": "dark",
+					"notifications": true
+				}
+			},
+			"metadata": ["tag1", "tag2"],
+			"created_at": "2023-01-01T12:00:00Z"
+		}`
+
+		result, err := datasources.ParseGormFieldValue(field, complexJSON)
+		if err != nil {
+			t.Fatalf("⛔️ unexpected error for complex JSON: %v", err)
+		}
+
+		resultMap, ok := result.(map[string]any)
+		if !ok {
+			t.Fatalf("⛔️ expected result to be map[string]any, got %T", result)
+		}
+
+		// Verify some nested values
+		user, ok := resultMap["user"].(map[string]any)
+		if !ok {
+			t.Fatalf("⛔️ expected user to be map[string]any")
+		}
+
+		if user["id"] != float64(123) { // JSON numbers become float64
+			t.Errorf("⛔️ expected user ID to be 123, got %v", user["id"])
+		}
+
+		if user["name"] != "John Doe" {
+			t.Errorf("⛔️ expected user name to be 'John Doe', got %v", user["name"])
+		}
+	})
+
+	t.Run("empty string inputs", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			dataType    schema.DataType
+			expectError bool
+			expected    any
+		}{
+			{schema.String, false, ""},        // empty string fails JSON parse, returns original string
+			{schema.Bool, true, nil},          // empty string is not a valid bool
+			{schema.Float, true, nil},         // empty string is not a valid float
+			{schema.Int, true, nil},           // empty string is not a valid int
+			{schema.Uint, true, nil},          // empty string is not a valid uint
+			{schema.Bytes, false, []byte("")}, // empty string becomes empty byte slice
+		}
+
+		for _, tt := range tests {
+			field := &schema.Field{Name: "field", DataType: tt.dataType}
+			result, err := datasources.ParseGormFieldValue(field, "")
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("⛔️ expected error for empty string with %s field", tt.dataType)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("⛔️ unexpected error for empty string with %s field: %v", tt.dataType, err)
+				}
+				// Verify the result matches expected
+				if !reflect.DeepEqual(result, tt.expected) {
+					t.Errorf("⛔️ expected %v for empty string with %s field, got %v", tt.expected, tt.dataType, result)
+				}
+			}
 		}
 	})
 }

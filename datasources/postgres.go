@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +78,7 @@ type PostgresDatasource[T any] struct {
 	db         *gorm.DB
 	tableName  string
 	idField    string
-	fieldSpecs []*schema.Field
+	fieldMap   map[string]*schema.Field
 	fieldNames []string
 
 	filter      PostgresDatasourceFilter
@@ -90,6 +89,12 @@ type PostgresDatasource[T any] struct {
 	publicationName     string
 	replicationSlotName string
 	disableReplication  bool
+
+	replicationRunning bool
+	replicationMutex   *sync.Mutex
+
+	// Watcher channel
+	watcher chan DatasourcePushRequest
 }
 
 // Connect to PostgreSQL using GORM
@@ -174,6 +179,7 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 	}
 
 	// Get schema field names
+	fieldMap := map[string]*schema.Field{}
 	fieldNames := []string{}
 	isValidIDField := false
 	for _, field := range s.Fields {
@@ -182,6 +188,7 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 			isValidIDField = true
 			idField = field.DBName // Use the actual DB column name
 		}
+		fieldMap[field.DBName] = field
 		fieldNames = append(fieldNames, field.DBName)
 	}
 	if !isValidIDField {
@@ -193,7 +200,7 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 		db:         db,
 		tableName:  config.TableName,
 		idField:    idField,
-		fieldSpecs: s.Fields,
+		fieldMap:   fieldMap,
 		fieldNames: fieldNames,
 
 		filter:      config.Filter,
@@ -203,6 +210,11 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 		publicationName:     publicationName,
 		replicationSlotName: replicationSlotName,
 		disableReplication:  config.DisableReplication,
+
+		replicationRunning: false,
+		replicationMutex:   new(sync.Mutex),
+
+		watcher: make(chan DatasourcePushRequest, DefaultWatcherBufferSize),
 	}
 
 	// Set up logical replication if not disabled
@@ -406,13 +418,13 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 		var row T
 
 		for _, item = range request.Inserts {
-			if item == nil {
+			if len(item) == 0 {
 				continue
 			}
 
 			_, ok := item[ds.idField]
 			if !ok {
-				pushErr = fmt.Errorf("postgres insert error: missing '%s' field", ds.idField)
+				pushErr = fmt.Errorf("postgres insert error: missing '%s' field, %#v", ds.idField, item)
 				slog.Warn(pushErr.Error())
 				continue
 			}
@@ -439,7 +451,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 			// Use PostgreSQL's ON CONFLICT for upsert
 			result := tx.Table(ds.tableName).Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: ds.idField}},
-				DoUpdates: clause.AssignmentColumns(ds.fieldNames),
+				DoUpdates: clause.AssignmentColumns(ds.fieldNames), // TODO: confirm if this only updates available fields
 			}).Create(&row)
 			if result.Error != nil {
 				pushErr = fmt.Errorf("postgres upsert error: %w", result.Error)
@@ -457,7 +469,14 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 		var row T
 
 		for _, item = range request.Updates {
-			if item == nil {
+			if len(item) == 0 {
+				continue
+			}
+
+			id, ok := item[ds.idField]
+			if !ok {
+				pushErr = fmt.Errorf("postgres update error: missing '%s' field", ds.idField)
+				slog.Warn(pushErr.Error())
 				continue
 			}
 
@@ -465,7 +484,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 			if ds.transformer != nil {
 				t, err := ds.transformer(item)
 				if err != nil {
-					pushErr = fmt.Errorf("postgres insert transformer error: %w", err)
+					pushErr = fmt.Errorf("postgres update transformer error: %w", err)
 					slog.Warn(pushErr.Error())
 
 					continue
@@ -474,7 +493,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 			} else {
 				t, err := ds.UnmarshalModel(item)
 				if err != nil {
-					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
+					pushErr = fmt.Errorf("postgres update unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
 
 					continue
@@ -484,11 +503,11 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 
 			// Upsert: Update if exists, insert if not
 			result := tx.Table(ds.tableName).
-				Where(fmt.Sprintf("%s = ?", pq.QuoteIdentifier(ds.idField)), item[ds.idField]).
+				Where(fmt.Sprintf("%s = ?", pq.QuoteIdentifier(ds.idField)), id).
 				Updates(row)
 			if result.RowsAffected == 0 {
 				if result.Error != nil {
-					pushErr = fmt.Errorf("postgres upsert update error: %w", result.Error)
+					pushErr = fmt.Errorf("postgres upsert (update) error: %w", result.Error)
 					slog.Warn(pushErr.Error())
 					continue
 				}
@@ -496,7 +515,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				// No rows updated, try insert
 				result := tx.Table(ds.tableName).Create(&row)
 				if result.Error != nil {
-					pushErr = fmt.Errorf("postgres upsert insert error: %w", result.Error)
+					pushErr = fmt.Errorf("postgres upsert (insert) error: %w", result.Error)
 					slog.Warn(pushErr.Error())
 				} else {
 					count.Updates++
@@ -534,55 +553,64 @@ func (ds *PostgresDatasource[T]) Watch(ctx *context.Context, request *Datasource
 		panic(fmt.Errorf("postgres watch error: replication is disabled"))
 	}
 
-	watcher := make(chan DatasourcePushRequest)
+	// Start replication only once, on first watcher
+	ds.replicationMutex.Lock()
+	defer ds.replicationMutex.Unlock()
+	if !ds.replicationRunning {
+		ds.replicationRunning = true
 
-	// Process PostgreSQL logical replication events
-	processEvent := func(event *ReplicationEvent) DatasourcePushRequest {
-		inserts, updates, deletes := []map[string]any{}, []map[string]any{}, []string{}
+		// Process PostgreSQL logical replication events
+		processEvent := func(event *ReplicationEvent) DatasourcePushRequest {
+			inserts, updates, deletes := []map[string]any{}, []map[string]any{}, []string{}
 
-		switch event.Action {
-		case ReplicationEventActionInsert:
-			if event.Data != nil {
-				inserts = append(inserts, event.Data)
-			}
+			switch event.Action {
+			case ReplicationEventActionInsert:
+				if event.Data != nil {
+					inserts = append(inserts, event.Data)
+				}
 
-		case ReplicationEventActionUpdate:
-			if event.Data != nil {
-				updates = append(updates, event.Data)
-			}
+			case ReplicationEventActionUpdate:
+				if event.Data != nil {
+					updates = append(updates, event.Data)
+				}
 
-		case ReplicationEventActionDelete:
-			if event.Data != nil {
-				if id, ok := event.Data[ds.idField]; ok {
-					deletes = append(deletes, fmt.Sprintf("%+v", id))
+			case ReplicationEventActionDelete:
+				if event.Data != nil {
+					if id, ok := event.Data[ds.idField]; ok {
+						deletes = append(deletes, fmt.Sprintf("%+v", id))
+					}
 				}
 			}
+
+			return DatasourcePushRequest{
+				Inserts: inserts,
+				Updates: updates,
+				Deletes: deletes,
+			}
 		}
 
-		return DatasourcePushRequest{
-			Inserts: inserts,
-			Updates: updates,
-			Deletes: deletes,
-		}
+		// Start logical replication listener in background
+		go func(bgCtx context.Context) {
+			defer func() {
+				ds.replicationMutex.Lock()
+				ds.replicationRunning = false
+				ds.replicationMutex.Unlock()
+			}()
+
+			// Create replication connection using pgx
+			err := ds.startLogicalReplication(bgCtx, ds.watcher, processEvent)
+			if err != nil {
+				slog.Error("postgres watch: logical replication failed", "error", err)
+				return
+			}
+		}(*ctx)
 	}
-
-	// Start logical replication listener in background
-	go func(bgCtx context.Context) {
-		defer close(watcher)
-
-		// Create replication connection using pgx
-		err := ds.startLogicalReplication(bgCtx, watcher, processEvent)
-		if err != nil {
-			slog.Error("postgres watch: logical replication failed", "error", err)
-			return
-		}
-	}(*ctx)
 
 	// Return stream changes channel
 	return StreamChanges(
 		ctx,
 		fmt.Sprintf("postgres table '%s'", ds.tableName),
-		watcher,
+		ds.watcher,
 		request,
 	)
 }
@@ -623,6 +651,9 @@ func (ds *PostgresDatasource[T]) Close(ctx *context.Context) error {
 			}
 		}
 	}
+
+	// Close watcher channel
+	close(ds.watcher)
 
 	return sqlDB.Close()
 }
@@ -736,8 +767,8 @@ type ReplicationEvent struct {
 	Data   map[string]any         `json:"data"`
 }
 
-// parseColumnData converts pglogrepl tuple data to map[string]any
-func (ds *PostgresDatasource[T]) parseColumnData(tuple *pglogrepl.TupleData, relation *pglogrepl.RelationMessage) map[string]any {
+// parseRow converts pglogrepl tuple data to map[string]any
+func (ds *PostgresDatasource[T]) parseRow(tuple *pglogrepl.TupleData, relation *pglogrepl.RelationMessage) map[string]any {
 	if tuple == nil {
 		return nil
 	}
@@ -756,34 +787,13 @@ func (ds *PostgresDatasource[T]) parseColumnData(tuple *pglogrepl.TupleData, rel
 		case pglogrepl.TupleDataTypeText, pglogrepl.TupleDataTypeBinary:
 			// Try to convert to appropriate Go type
 			dataStr := string(col.Data)
-
-			// Try boolean first
-			if dataStr == "t" || dataStr == "true" {
-				result[columnName] = true
-			} else if dataStr == "f" || dataStr == "false" {
-				result[columnName] = false
-			} else if parsedInt, err := strconv.ParseInt(dataStr, 10, 32); err == nil {
-				// Try int32
-				result[columnName] = int32(parsedInt)
-			} else if parsedTime, err := time.Parse(time.RFC3339, dataStr); err == nil {
-				// Try time (RFC3339 format)
-				result[columnName] = parsedTime
-			} else if parsedTime, err := time.Parse(time.RFC3339Nano, dataStr); err == nil {
-				// Try time (RFC3339 Nano format)
-				result[columnName] = parsedTime
-			} else if parsedTime, err := time.Parse("2006-01-02 15:04:05.000000+00", dataStr); err == nil {
-				// Try time (PostgreSQL timestamp format)
-				result[columnName] = parsedTime
-			} else {
-				// Try to parse as JSON first
-				var jsonData map[string]any
-				if err := json.Unmarshal([]byte(dataStr), &jsonData); err == nil {
-					result[columnName] = jsonData
-				} else {
-					// Finally, use as string
-					result[columnName] = dataStr
+			if field, ok := ds.fieldMap[columnName]; ok {
+				if v, err := ParseGormFieldValue(field, dataStr); err == nil {
+					result[columnName] = v
+					continue
 				}
 			}
+			result[columnName] = dataStr
 		}
 	}
 
@@ -810,7 +820,7 @@ func (ds *PostgresDatasource[T]) processLogicalReplicationData(walData []byte, r
 
 	// Handle INSERT messages
 	case *pglogrepl.InsertMessage:
-		data := ds.parseColumnData(msg.Tuple, relations[msg.RelationID])
+		data := ds.parseRow(msg.Tuple, relations[msg.RelationID])
 
 		return &ReplicationEvent{
 			Action: ReplicationEventActionInsert,
@@ -819,7 +829,7 @@ func (ds *PostgresDatasource[T]) processLogicalReplicationData(walData []byte, r
 
 	// Handle UPDATE messages - use NewTuple for current values
 	case *pglogrepl.UpdateMessage:
-		data := ds.parseColumnData(msg.NewTuple, relations[msg.RelationID])
+		data := ds.parseRow(msg.NewTuple, relations[msg.RelationID])
 
 		return &ReplicationEvent{
 			Action: ReplicationEventActionUpdate,
@@ -831,7 +841,7 @@ func (ds *PostgresDatasource[T]) processLogicalReplicationData(walData []byte, r
 
 		var data map[string]any
 		if msg.OldTupleType == 'K' || msg.OldTupleType == 'O' {
-			data = ds.parseColumnData(msg.OldTuple, relations[msg.RelationID])
+			data = ds.parseRow(msg.OldTuple, relations[msg.RelationID])
 		}
 
 		return &ReplicationEvent{
@@ -891,7 +901,7 @@ func (ds *PostgresDatasource[T]) startLogicalReplication(ctx context.Context, wa
 				startLSN = lsn
 			}
 		}
-		slog.Info("Created replication slot", "slot", ds.replicationSlotName)
+		slog.Debug("Created replication slot", "slot", ds.replicationSlotName)
 	}
 
 	// Start logical replication from the slot using pglogrepl

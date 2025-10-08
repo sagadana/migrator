@@ -23,6 +23,7 @@ type MemoryDatasource struct {
 	ids  []string
 	data *sync.Map
 
+	// Watcher channel
 	watcher       chan DatasourcePushRequest
 	watcherActive bool
 }
@@ -32,7 +33,7 @@ func NewMemoryDatasource(name string, idField string) *MemoryDatasource {
 		name:          name,
 		idField:       idField,
 		data:          new(sync.Map),
-		watcher:       make(chan DatasourcePushRequest),
+		watcher:       make(chan DatasourcePushRequest, DefaultWatcherBufferSize),
 		watcherActive: false,
 	}
 }
@@ -207,9 +208,7 @@ func (m *MemoryDatasource) Push(_ *context.Context, request *DatasourcePushReque
 
 	// Notify watchers
 	if m.watcherActive && m.watcher != nil {
-		go func(e DatasourcePushRequest) {
-			m.watcher <- e
-		}(*event)
+		m.watcher <- *event
 	}
 
 	return count, pushErr
@@ -220,6 +219,7 @@ func (m *MemoryDatasource) Watch(ctx *context.Context, request *DatasourceStream
 		panic(ErrDatastoreClosed)
 	}
 
+	// Return stream changes channel
 	m.watcherActive = true
 	return StreamChanges(
 		ctx,
@@ -243,6 +243,10 @@ func (m *MemoryDatasource) Close(ctx *context.Context) error {
 	m.data = new(sync.Map)
 	m.ids = make([]string, 0)
 	m.isClosed = true
+
+	// Close watcher channel
+	close(m.watcher)
+
 	m.watcherActive = false
 	return nil
 }

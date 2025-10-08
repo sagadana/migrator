@@ -3,7 +3,6 @@ package helpers
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
@@ -248,12 +247,6 @@ func ExtractNumber(s string) int {
 		}
 	}
 	return 0 // Default to 0 if no number is found
-}
-
-// Computes a SHA256 hash for a given byte slice.
-func CalculateHash(data []byte) string {
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
 }
 
 // Generates a random string for the given length

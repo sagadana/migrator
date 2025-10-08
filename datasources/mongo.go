@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -44,6 +45,12 @@ type MongoDatasource struct {
 	sort   bson.D
 	// Use accurate counting instead of estimated count (slower)
 	accurateCount bool
+
+	streamRunning bool
+	streamMutex   *sync.Mutex
+
+	// Watcher channel
+	watcher chan DatasourcePushRequest
 
 	transformer DatasourceTransformer
 }
@@ -135,6 +142,11 @@ func NewMongoDatasource(ctx *context.Context,
 		filter:        config.Filter,
 		sort:          mongoSort,
 		accurateCount: config.AccurateCount,
+
+		streamRunning: false,
+		streamMutex:   new(sync.Mutex),
+
+		watcher: make(chan DatasourcePushRequest, DefaultWatcherBufferSize),
 
 		transformer: config.WithTransformer,
 	}
@@ -345,129 +357,144 @@ func (ds *MongoDatasource) Push(ctx *context.Context, request *DatasourcePushReq
 
 // Listen to Change Data Streams (CDC) if available
 func (ds *MongoDatasource) Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
-	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
-	watcher := make(chan DatasourcePushRequest)
 
-	const StreamOpTypeField = "operationType"
-	const StreamDocKeyField = "documentKey"
-	const StreamFullDocField = "fullDocument"
+	// Start stream only once, on first watcher
+	ds.streamMutex.Lock()
+	defer ds.streamMutex.Unlock()
+	if !ds.streamRunning {
+		ds.streamRunning = true
 
-	// Convert mongo stream event to Datasource Push Request
-	processEvent := func(event map[string]any) DatasourcePushRequest {
-		inserts, updates, deletes := []map[string]any{}, []map[string]any{}, []string{}
-		opType := event[StreamOpTypeField].(string)
+		collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)
 
-		switch opType {
-		case "insert":
-			doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
-			if !ok {
-				break
+		const StreamOpTypeField = "operationType"
+		const StreamDocKeyField = "documentKey"
+		const StreamFullDocField = "fullDocument"
+
+		// Convert mongo stream event to Datasource Push Request
+		processEvent := func(event map[string]any) DatasourcePushRequest {
+			inserts, updates, deletes := []map[string]any{}, []map[string]any{}, []string{}
+			opType := event[StreamOpTypeField].(string)
+
+			switch opType {
+			case "insert":
+				doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
+				if !ok {
+					break
+				}
+				inserts = append(inserts, doc)
+
+			case "update":
+				docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
+				if !ok {
+					break
+				}
+
+				doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
+				if !ok {
+					break
+				}
+
+				id, ok := docKey[ds.idField]
+				if !ok {
+					doc[ds.idField] = id
+				}
+				updates = append(updates, doc)
+
+			case "delete":
+				docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
+				if !ok {
+					break
+				}
+
+				id := docKey[ds.idField]
+				deletes = append(deletes, id.(string))
 			}
-			inserts = append(inserts, doc)
 
-		case "update":
-			docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
-			if !ok {
-				break
+			return DatasourcePushRequest{
+				Inserts: inserts,
+				Updates: updates,
+				Deletes: deletes,
 			}
-
-			doc, ok := ConvertBSON(event[StreamFullDocField]).(map[string]any)
-			if !ok {
-				break
-			}
-
-			id, ok := docKey[ds.idField]
-			if !ok {
-				doc[ds.idField] = id
-			}
-			updates = append(updates, doc)
-
-		case "delete":
-			docKey, ok := ConvertBSON(event[StreamDocKeyField]).(map[string]any)
-			if !ok {
-				break
-			}
-
-			id := docKey[ds.idField]
-			deletes = append(deletes, id.(string))
 		}
 
-		return DatasourcePushRequest{
-			Inserts: inserts,
-			Updates: updates,
-			Deletes: deletes,
-		}
-	}
+		// Options for the change stream.
+		// MaxAwaitTime tells the server how long to wait for new data before returning an empty batch.
+		// This helps prevent the stream.Next() call from blocking indefinitely and allows our time window to function.
+		// We set it to our batch window duration for alignment.
+		streamOpts := options.ChangeStream().
+			SetFullDocument(options.UpdateLookup).
+			SetBatchSize(int32(max(request.BatchSize, 1))).
+			SetMaxAwaitTime(time.Duration(max(request.BatchWindowSeconds, 1)) * time.Second)
 
-	// Options for the change stream.
-	// MaxAwaitTime tells the server how long to wait for new data before returning an empty batch.
-	// This helps prevent the stream.Next() call from blocking indefinitely and allows our time window to function.
-	// We set it to our batch window duration for alignment.
-	streamOpts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup).
-		SetBatchSize(int32(max(request.BatchSize, 1))).
-		SetMaxAwaitTime(time.Duration(max(request.BatchWindowSeconds, 1)) * time.Second)
-
-	// Watch all changes for insert, update, delete
-	matchFilter := bson.E{
-		Key: "$match",
-		Value: bson.D{
-			{
-				Key: StreamOpTypeField,
-				Value: bson.D{{
-					Key:   "$in",
-					Value: bson.A{"insert", "update", "delete"},
-				}},
+		// Watch all changes for insert, update, delete
+		matchFilter := bson.E{
+			Key: "$match",
+			Value: bson.D{
+				{
+					Key: StreamOpTypeField,
+					Value: bson.D{{
+						Key:   "$in",
+						Value: bson.A{"insert", "update", "delete"},
+					}},
+				},
 			},
-		},
-	}
-
-	// Add filter conditions if ds.filter is not empty
-	if len(ds.filter) > 0 {
-		for key, value := range ds.filter {
-			filterKey := fmt.Sprintf("%s.%s", StreamFullDocField, key)
-			matchFilter.Value = append(matchFilter.Value.(bson.D), bson.E{
-				Key:   filterKey,
-				Value: value,
-			})
 		}
-	}
 
-	// Start the change stream
-	pipeline := mongo.Pipeline{{
-		matchFilter,
-	}}
-	stream, err := collection.Watch(*ctx, pipeline, streamOpts)
-	if err != nil {
-		panic(fmt.Errorf("mongodb watch error: '%s", err.Error()))
-	}
+		// Add filter conditions if ds.filter is not empty
+		if len(ds.filter) > 0 {
+			for key, value := range ds.filter {
+				filterKey := fmt.Sprintf("%s.%s", StreamFullDocField, key)
+				matchFilter.Value = append(matchFilter.Value.(bson.D), bson.E{
+					Key:   filterKey,
+					Value: value,
+				})
+			}
+		}
 
-	// Process mongo change stream in the background
-	go func(bgCtx context.Context) {
-		defer close(watcher)
-		defer stream.Close(bgCtx)
+		// Start the change stream
+		pipeline := mongo.Pipeline{{
+			matchFilter,
+		}}
+		stream, err := collection.Watch(*ctx, pipeline, streamOpts)
+		if err != nil {
+			panic(fmt.Errorf("mongodb watch error: '%s", err.Error()))
+		}
 
-		for {
-			select {
-			case <-bgCtx.Done():
-				return
+		// Process mongo change stream in the background
+		go func(bgCtx context.Context) {
+			defer func() {
+				ds.streamMutex.Lock()
+				if stream != nil && ds.streamRunning {
+					stream.Close(bgCtx)
+				}
+				ds.streamRunning = false
+				ds.streamMutex.Unlock()
+			}()
 
-			default:
-				var event map[string]any
-				hasNext := stream.Next(*ctx)
-				if hasNext {
-					if err := stream.Decode(&event); err == nil {
-						watcher <- processEvent(event)
+			for {
+				select {
+				case <-bgCtx.Done():
+					return
+
+				default:
+					var event map[string]any
+					hasNext := stream.Next(*ctx)
+					if hasNext {
+						if err := stream.Decode(&event); err == nil {
+							ds.watcher <- processEvent(event)
+						}
 					}
 				}
 			}
-		}
-	}(*ctx)
+		}(*ctx)
 
+	}
+
+	// Return stream changes channel
 	return StreamChanges(
 		ctx,
 		fmt.Sprintf("mongo datastore collection '%s'", ds.collectionName),
-		watcher,
+		ds.watcher,
 		request,
 	)
 }
@@ -481,6 +508,9 @@ func (ds *MongoDatasource) Clear(ctx *context.Context) error {
 
 // Close data source
 func (ds *MongoDatasource) Close(ctx *context.Context) error {
+	// Close watcher channel
+	close(ds.watcher)
+
 	return ds.client.Disconnect(*ctx)
 }
 

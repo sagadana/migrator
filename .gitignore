@@ -25,5 +25,6 @@ go.work.sum
 .env
 
 # Test files
-*test*.json
 .test*/
+*test*.json
+test_*.go
