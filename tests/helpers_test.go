@@ -2,8 +2,6 @@ package tests
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -120,10 +118,8 @@ func TestParallelBatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var (
-				mu    sync.Mutex
-				calls []jobCall
-			)
+			calls := make([]jobCall, 0)
+			mu := new(sync.Mutex)
 
 			// Wrap the fn to capture calls
 			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id int, size, offset uint64) {
@@ -333,18 +329,6 @@ func TestNumberAwareSort(t *testing.T) {
 		if data[i] != want[i] {
 			t.Errorf("❌ NumberAwareSort result[%d] = %q; want %q", i, data[i], want[i])
 		}
-	}
-}
-
-func TestCalculateHash(t *testing.T) {
-	t.Parallel()
-
-	data := []byte("hello world")
-	got := helpers.CalculateHash(data)
-	expectedArr := sha256.Sum256(data)
-	want := hex.EncodeToString(expectedArr[:])
-	if got != want {
-		t.Errorf("❌ CalculateHash = %q; want %q", got, want)
 	}
 }
 

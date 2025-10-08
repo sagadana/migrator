@@ -2,19 +2,26 @@ package datasources
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/sagadana/migrator/helpers"
+	"gorm.io/gorm/schema"
 )
 
 var (
 	ErrDatastoreClosed = errors.New("datasource closed")
 )
+
+const DefaultWatcherBufferSize = 1024
 
 // ----------------------------
 // Types: Push, Fetch, Stream
@@ -283,14 +290,73 @@ func SaveCSV(
 	return nil
 }
 
-// Process datasource change stream with additional features such as batching
+// Process datasource change stream with additional features such as batching and de-duplication within a batch window
 func StreamChanges(
 	ctx *context.Context,
-	title string,
+	name string,
 	watcher <-chan DatasourcePushRequest,
 	request *DatasourceStreamRequest) <-chan DatasourceStreamResult {
 
 	out := make(chan DatasourceStreamResult)
+
+	// Helper function to calculate hash for insert/update documents
+	calculateDocumentHash := func(doc map[string]any) string {
+		docBytes, err := json.Marshal(doc)
+		if err != nil {
+			// Fallback to string representation if JSON encoding fails
+			docBytes = fmt.Appendf(nil, "%v", doc)
+		}
+		// Include name in the hash to make it unique per stream
+		hashData := append(docBytes, []byte(name)...)
+		hash := sha256.Sum256(hashData)
+		return hex.EncodeToString(hash[:])
+	}
+
+	// Helper function to calculate hash for delete IDs
+	calculateDeleteHash := func(id string) string {
+		// Include title in the hash to make it unique per stream
+		hashData := append([]byte(id), []byte(name)...)
+		hash := sha256.Sum256(hashData)
+		return hex.EncodeToString(hash[:])
+	}
+
+	// Helper function to process events with deduplication
+	processEvent := func(event DatasourcePushRequest, seenHashes map[string]bool, batchInserts *[]map[string]any, batchUpdates *[]map[string]any, batchDeletes *[]string) {
+
+		// Process inserts with hash-based deduplication
+		for _, doc := range event.Inserts {
+			if doc == nil {
+				continue
+			}
+			hash := calculateDocumentHash(doc)
+			exist, ok := seenHashes[hash]
+			if !ok && !exist {
+				seenHashes[hash] = true
+				*batchInserts = append(*batchInserts, doc)
+			}
+		}
+		// Process updates with hash-based deduplication
+		for _, doc := range event.Updates {
+			if doc == nil {
+				continue
+			}
+			hash := calculateDocumentHash(doc)
+			exist, ok := seenHashes[hash]
+			if !ok && !exist {
+				seenHashes[hash] = true
+				*batchUpdates = append(*batchUpdates, doc)
+			}
+		}
+		// Process deletes with hash-based deduplication
+		for _, id := range event.Deletes {
+			hash := calculateDeleteHash(id)
+			exist, ok := seenHashes[hash]
+			if !ok && !exist {
+				seenHashes[hash] = true
+				*batchDeletes = append(*batchDeletes, id)
+			}
+		}
+	}
 
 	go func(bgCtx context.Context) {
 		defer close(out)
@@ -301,42 +367,41 @@ func StreamChanges(
 		ticker := time.NewTicker(time.Duration(batchWindow) * time.Second)
 		defer ticker.Stop()
 
-		batch := DatasourcePushRequest{
-			Inserts: []map[string]any{},
-			Updates: []map[string]any{},
-			Deletes: []string{},
-		}
+		// Use maps to track hashes and prevent duplicates
+		seenHashes := make(map[string]bool)
+		var batchInserts []map[string]any
+		var batchUpdates []map[string]any
+		var batchDeletes []string
 
-		slog.Info(fmt.Sprintf("Watching %s for changes...", title))
+		slog.Info(fmt.Sprintf("Watching %s for changes...", name))
 
 		for {
 			select {
 			case <-bgCtx.Done():
-				slog.Info(fmt.Sprintf("Closing %s watcher...", title))
+				slog.Info(fmt.Sprintf("Closing %s watcher...", name))
 
 				// Watcher closed - Drain channel
 				timer := time.After(time.Duration(batchWindow) * time.Second)
 				for {
 					select {
 					case event := <-watcher:
-						// Drain
-						if event.Inserts != nil {
-							batch.Inserts = append(batch.Inserts, event.Inserts...)
-						}
-						if event.Updates != nil {
-							batch.Updates = append(batch.Updates, event.Updates...)
-						}
-						if event.Deletes != nil {
-							batch.Deletes = append(batch.Deletes, event.Deletes...)
-						}
+						// Drain and deduplicate using the helper function
+						processEvent(event, seenHashes, &batchInserts, &batchUpdates, &batchDeletes)
 
 					case <-timer:
 						// Send remaining batch after waiting for batch window
 						// TODO: Investigate if this could be causing downstream to
 						//   process logic that require context even when it is closed
-						if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
-							out <- DatasourceStreamResult{Docs: batch}
-							batch = *new(DatasourcePushRequest) // clean up batch
+						if len(batchInserts)+len(batchUpdates)+len(batchDeletes) > 0 {
+							out <- DatasourceStreamResult{Docs: DatasourcePushRequest{
+								Inserts: batchInserts,
+								Updates: batchUpdates,
+								Deletes: batchDeletes,
+							}}
+							// Clean up batch slices and hashes
+							batchInserts = nil
+							batchUpdates = nil
+							batchDeletes = nil
 						}
 						return
 					}
@@ -344,39 +409,37 @@ func StreamChanges(
 
 			case <-ticker.C:
 				// Time elapsed - send batch
-				if len(batch.Inserts)+len(batch.Updates)+len(batch.Deletes) > 0 {
-					out <- DatasourceStreamResult{Docs: batch}
-					// Reset batch
-					batch = DatasourcePushRequest{
-						Inserts: []map[string]any{},
-						Updates: []map[string]any{},
-						Deletes: []string{},
-					}
+				if len(batchInserts)+len(batchUpdates)+len(batchDeletes) > 0 {
+					out <- DatasourceStreamResult{Docs: DatasourcePushRequest{
+						Inserts: batchInserts,
+						Updates: batchUpdates,
+						Deletes: batchDeletes,
+					}}
+					// Reset batch slices and hashes
+					batchInserts = make([]map[string]any, 0)
+					batchUpdates = make([]map[string]any, 0)
+					batchDeletes = make([]string, 0)
+					seenHashes = make(map[string]bool)
 				}
 
 			case event := <-watcher:
-
-				// Append items to batch
-				if event.Inserts != nil {
-					batch.Inserts = append(batch.Inserts, event.Inserts...)
-				}
-				if event.Updates != nil {
-					batch.Updates = append(batch.Updates, event.Updates...)
-				}
-				if event.Deletes != nil {
-					batch.Deletes = append(batch.Deletes, event.Deletes...)
-				}
+				// Process event with hash-based de-duplication using helper function
+				processEvent(event, seenHashes, &batchInserts, &batchUpdates, &batchDeletes)
 
 				// Batch full - send batch
-				count := len(batch.Inserts) + len(batch.Updates) + len(batch.Deletes)
+				count := len(batchInserts) + len(batchUpdates) + len(batchDeletes)
 				if count > 0 && count >= int(batchSize) {
-					out <- DatasourceStreamResult{Docs: batch}
-					// Reset batch
-					batch = DatasourcePushRequest{
-						Inserts: []map[string]any{},
-						Updates: []map[string]any{},
-						Deletes: []string{},
+					batch := DatasourcePushRequest{
+						Inserts: batchInserts,
+						Updates: batchUpdates,
+						Deletes: batchDeletes,
 					}
+					out <- DatasourceStreamResult{Docs: batch}
+					// Reset batch slices and hashes
+					batchInserts = make([]map[string]any, 0)
+					batchUpdates = make([]map[string]any, 0)
+					batchDeletes = make([]string, 0)
+					seenHashes = make(map[string]bool)
 					// Reset timer
 					ticker.Reset(time.Duration(batchWindow) * time.Second)
 				}
@@ -386,4 +449,112 @@ func StreamChanges(
 	}(*ctx)
 
 	return out
+}
+
+// Parse value based on GORM field type
+// Returns parsed value or error if parsing fails
+// Note: This is a best-effort implementation and may not cover all edge cases.
+// It is recommended to validate the parsed values before using them in database operations.
+func ParseGormFieldValue(field *schema.Field, value any) (any, error) {
+
+	var result any
+	var err error
+
+	if value == nil {
+		return nil, nil
+	}
+
+	switch field.DataType {
+	case schema.String:
+		switch v := value.(type) {
+		case string:
+			// Try convert from JSON string
+			var jsonData map[string]any
+			if jsonErr := json.Unmarshal([]byte(v), &jsonData); jsonErr == nil {
+				result = jsonData
+			} else {
+				result = v
+			}
+		case []byte:
+			// Try convert from JSON bytes
+			var jsonData map[string]any
+			if jsonErr := json.Unmarshal(v, &jsonData); jsonErr == nil {
+				result = jsonData
+			} else {
+				result = string(v)
+			}
+		}
+
+	case schema.Bool:
+		if b, ok := value.(bool); ok {
+			result = b
+		} else if result, err = strconv.ParseBool(fmt.Sprintf("%v", value)); err != nil {
+			err = fmt.Errorf("invalid value type for bool field %s: %T", field.Name, value)
+		}
+
+	case schema.Float:
+		switch v := value.(type) {
+		case float32:
+			result = float64(v)
+		case float64:
+			result = v
+		default:
+			if result, err = strconv.ParseFloat(fmt.Sprintf("%v", v), 64); err != nil {
+				err = fmt.Errorf("invalid value type for float field %s: %w", field.Name, err)
+			}
+		}
+
+	case schema.Time:
+		if t, ok := value.(time.Time); ok {
+			result = t
+		} else if result, err = time.Parse(time.RFC3339, fmt.Sprintf("%v", value)); err != nil {
+			if result, err = time.Parse(time.RFC3339Nano, fmt.Sprintf("%v", value)); err != nil {
+				if result, err = time.Parse("2006-01-02 15:04:05.000000+00", fmt.Sprintf("%v", value)); err != nil {
+					err = fmt.Errorf("invalid value type for time field %s: %w", field.Name, err)
+				}
+			}
+		}
+
+	case schema.Int:
+		switch v := value.(type) {
+		case int, int8, int16, int32:
+			if result, err = strconv.ParseInt(fmt.Sprintf("%v", v), 10, 64); err != nil {
+				err = fmt.Errorf("invalid value type for int field %s: %w", field.Name, err)
+			}
+		case int64:
+			result = v
+		default:
+			if result, err = strconv.ParseInt(fmt.Sprintf("%v", v), 10, 64); err != nil {
+				err = fmt.Errorf("invalid value type for int field %s: %w", field.Name, err)
+			}
+		}
+
+	case schema.Uint:
+		switch v := value.(type) {
+		case uint, uint8, uint16, uint32:
+			if result, err = strconv.ParseUint(fmt.Sprintf("%v", v), 10, 64); err != nil {
+				err = fmt.Errorf("invalid value type for uint field %s: %w", field.Name, err)
+			}
+		case uint64:
+			result = v
+		default:
+			if result, err = strconv.ParseUint(fmt.Sprintf("%v", v), 10, 64); err != nil {
+				err = fmt.Errorf("invalid value type for uint field %s: %w", field.Name, err)
+			}
+		}
+
+	case schema.Bytes:
+		if b, ok := value.([]byte); ok {
+			result = b
+		} else if s, ok := value.(string); ok {
+			result = []byte(s)
+		} else {
+			err = fmt.Errorf("invalid value type for bytes field %s: %T", field.Name, value)
+		}
+
+	default:
+		err = fmt.Errorf("unsupported field type %s for field %s", field.DataType, field.Name)
+	}
+
+	return result, err
 }
