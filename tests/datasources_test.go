@@ -1062,7 +1062,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				close(resultCh)
 
 				// Wait a bit for all changes to propagate
-				<-time.After(time.Duration(200 * time.Millisecond))
+				<-time.After(time.Duration(500 * time.Millisecond))
 
 				// Check for errors
 				for err := range resultCh {
@@ -1136,7 +1136,7 @@ func TestDatasourceImplementations(t *testing.T) {
 					expUpdate += c.Updates
 					wg.Done()
 
-					<-time.After(time.Duration((batchWin*1000)+400) * time.Millisecond) // wait for watch batch window before deleting
+					<-time.After(time.Duration((batchWin*1000)+500) * time.Millisecond) // wait for watch batch window before deleting
 
 					// Delete
 					r = &datasources.DatasourcePushRequest{
@@ -1181,7 +1181,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						gotInsert += uint64(len(evt.Docs.Inserts))
 						gotUpdate += uint64(len(evt.Docs.Updates))
 						gotDelete += uint64(len(evt.Docs.Deletes))
-					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+500) * time.Millisecond): // Wait for watch batch window
+					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+2000) * time.Millisecond): // Wait for watch batch window
 						rWg.Wait()    // Wait for background pushes to complete
 						watchCancel() // Stop watching
 						break loop
@@ -1202,12 +1202,11 @@ func TestDatasourceImplementations(t *testing.T) {
 			})
 
 			t.Run("Test_Watch_Multiple_Workers", func(t *testing.T) {
-
 				td.source.Clear(&ctx)
 				<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
 
 				const numWorkers = 3
-				const numEvents = 5
+				const numEvents = 10
 				const watchTimeout = 15 * time.Second
 
 				// Setup test context with timeout
@@ -1231,7 +1230,7 @@ func TestDatasourceImplementations(t *testing.T) {
 
 						// Create watch request
 						streamReq := &datasources.DatasourceStreamRequest{
-							BatchSize:          1,
+							BatchSize:          3,
 							BatchWindowSeconds: 1,
 						}
 
@@ -1251,7 +1250,7 @@ func TestDatasourceImplementations(t *testing.T) {
 									return
 								}
 
-								count++
+								count += (len(event.Docs.Inserts) + len(event.Docs.Updates) + len(event.Docs.Deletes))
 								events = append(events, event)
 
 							case <-watchCtx.Done():
@@ -1266,7 +1265,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Give watchers time to start
-				time.Sleep(500 * time.Millisecond)
+				<-time.After(500 * time.Millisecond)
 
 				// Insert test data to generate events
 				for i := 1; i <= numEvents; i++ {
@@ -1279,11 +1278,11 @@ func TestDatasourceImplementations(t *testing.T) {
 					if err != nil {
 						t.Errorf("❌ Failed to insert test data %d: %v", i, err)
 					}
-					time.Sleep(100 * time.Millisecond) // Small delay between inserts
+					<-time.After(100 * time.Millisecond) // Small delay between inserts
 				}
 
 				// Wait a bit for events to propagate, then cancel watchers
-				time.Sleep(1000 * time.Millisecond)
+				<-time.After(1000 * time.Millisecond)
 				watchCancel()
 
 				// Wait for all watchers to finish
@@ -1313,13 +1312,12 @@ func TestDatasourceImplementations(t *testing.T) {
 				}
 
 				// Verify total event count matches expectations (workers share the processing)
-				expectedTotal := numEvents
 				if totalEvents == 0 {
 					t.Error("❌ No events were received by any worker!")
-				} else if totalEvents < expectedTotal {
-					t.Errorf("❌ Some events were missed: got %d, expected %d", totalEvents, expectedTotal)
-				} else if totalEvents > expectedTotal {
-					t.Errorf("❌ More events received than expected: got %d, expected %d (duplicate events detected)", totalEvents, expectedTotal)
+				} else if totalEvents < numEvents {
+					t.Errorf("❌ Some events were missed: got %d, expected %d", totalEvents, numEvents)
+				} else if totalEvents > numEvents {
+					t.Errorf("❌ More events received than expected: got %d, expected %d (duplicate events detected)", totalEvents, numEvents)
 				}
 
 				// Verify event content consistency

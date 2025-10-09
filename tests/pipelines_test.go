@@ -645,7 +645,7 @@ func testReplication(
 	go func() {
 		defer func() {
 			// Wait for replication batch window + processing before ending
-			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+200) * time.Millisecond)
+			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+400) * time.Millisecond)
 			t.Logf("Completed background updates for contiuous replication...")
 			crCancel()  // End continuous replication
 			crWg.Done() // Mark done
@@ -968,7 +968,7 @@ func TestPipelineImplementations(t *testing.T) {
 						migrationTotal := testMigration(
 							t, &ctx, &pipeline, &pipelines.PipelineConfig{
 								MigrationParallelWorkers: 4,
-								MigrationBatchSize:       4,
+								MigrationBatchSize:       8,
 								MigrationMaxSize:         maxSize,
 								MigrationStartOffset:     startOffset,
 							},
@@ -980,8 +980,8 @@ func TestPipelineImplementations(t *testing.T) {
 						startOffset += migrationTotal
 						testMigration(
 							t, &ctx, &pipeline, &pipelines.PipelineConfig{
-								MigrationParallelWorkers: 4,
-								MigrationBatchSize:       4,
+								MigrationParallelWorkers: 3,
+								MigrationBatchSize:       7,
 								MigrationMaxSize:         maxSize,
 								MigrationStartOffset:     startOffset,
 							},

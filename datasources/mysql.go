@@ -729,7 +729,7 @@ func (h *MySQLEventHandler[T]) OnRow(e *canal.RowsEvent) error {
 	}
 
 	// Check if watcher started and event timestamp is after watcher started
-	if !h.ds.watcherActive || h.ds.watcher == nil || h.ds.watcherStartedAt.IsZero() || e.Header.Timestamp < uint32(h.ds.watcherStartedAt.Unix()) {
+	if !h.ds.watcherActive || h.ds.watcher == nil || h.ds.watcherStartedAt.IsZero() || int64(e.Header.Timestamp) < h.ds.watcherStartedAt.Unix() {
 		return nil
 	}
 

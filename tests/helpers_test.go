@@ -20,7 +20,7 @@ import (
 
 // jobCall records one invocation of the user-supplied fn.
 type jobCall struct {
-	ID     int
+	ID     uint64
 	Size   uint64
 	Offset uint64
 	CtxPtr *context.Context
@@ -38,12 +38,12 @@ func TestParallelBatch(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		config   helpers.ParallelConfig
+		config   helpers.ParallelBatchConfig
 		expected []jobCall
 	}{
 		{
 			name: "Basic single worker, partial last batch",
-			config: helpers.ParallelConfig{
+			config: helpers.ParallelBatchConfig{
 				Units:       1,
 				Total:       5,
 				BatchSize:   2,
@@ -57,7 +57,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "BatchSize > Total (one big batch)",
-			config: helpers.ParallelConfig{
+			config: helpers.ParallelBatchConfig{
 				Units:       3,
 				Total:       4,
 				BatchSize:   10,
@@ -69,7 +69,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Zero BatchSize fallback to 1",
-			config: helpers.ParallelConfig{
+			config: helpers.ParallelBatchConfig{
 				Units:       2,
 				Total:       3,
 				BatchSize:   0,
@@ -83,7 +83,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Zero Units fallback to 1",
-			config: helpers.ParallelConfig{
+			config: helpers.ParallelBatchConfig{
 				Units:       0,
 				Total:       3,
 				BatchSize:   2,
@@ -96,7 +96,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Multiple workers, even split with remainder",
-			config: helpers.ParallelConfig{
+			config: helpers.ParallelBatchConfig{
 				Units:       3,
 				Total:       7,
 				BatchSize:   2,
@@ -111,7 +111,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name:   "Total zero yields no jobs",
-			config: helpers.ParallelConfig{Units: 5, Total: 0, BatchSize: 3},
+			config: helpers.ParallelBatchConfig{Units: 5, Total: 0, BatchSize: 3},
 			// expected empty slice
 		},
 	}
@@ -122,7 +122,7 @@ func TestParallelBatch(t *testing.T) {
 			mu := new(sync.Mutex)
 
 			// Wrap the fn to capture calls
-			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id int, size, offset uint64) {
+			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id, size, offset uint64) {
 				mu.Lock()
 				defer mu.Unlock()
 				calls = append(calls, jobCall{

@@ -16,9 +16,9 @@ import (
 	"sync"
 )
 
-type ParallelConfig struct {
+type ParallelBatchConfig struct {
 	// Number of parallel workers
-	Units int
+	Units uint
 	// Total items
 	Total uint64
 	// Number of items to process per batch
@@ -28,16 +28,37 @@ type ParallelConfig struct {
 }
 
 type ChunkJob struct {
-	ID     int
+	ID     uint64
 	Offset uint64
 	Size   uint64
+}
+
+// Run function in parallel workers
+func Parallel(units uint, fn func(worker uint)) *sync.WaitGroup {
+	// Normalize Units
+	if units <= 0 {
+		units = 1
+	}
+
+	wg := new(sync.WaitGroup)
+
+	// Spawn workers
+	for i := uint(0); i < units; i++ {
+		wg.Add(1)
+		go func(worker uint) {
+			defer wg.Done()
+			fn(worker)
+		}(i)
+	}
+
+	return wg
 }
 
 // Process batch items in parallel
 func ParallelBatch(
 	ctx *context.Context,
-	config *ParallelConfig,
-	fn func(ctx *context.Context, job int, size, offset uint64),
+	config *ParallelBatchConfig,
+	fn func(ctx *context.Context, job, size, offset uint64),
 ) {
 
 	// Normalize Units
@@ -70,18 +91,13 @@ func ParallelBatch(
 
 	// Buffered channel holds all jobs
 	jobs := make(chan ChunkJob, batches)
-	var wg sync.WaitGroup
 
 	// Spawn workers
-	for range units {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				fn(ctx, job.ID, job.Size, job.Offset)
-			}
-		}()
-	}
+	wg := Parallel(units, func(_ uint) {
+		for job := range jobs {
+			fn(ctx, job.ID, job.Size, job.Offset)
+		}
+	})
 
 	// Enqueue jobs
 	for i := uint64(0); i < batches; i++ {
@@ -91,7 +107,7 @@ func ParallelBatch(
 		}
 		offset := start + (batchSize * i)
 		jobs <- ChunkJob{
-			ID:     int(i),
+			ID:     i,
 			Offset: offset,
 			Size:   size,
 		}
