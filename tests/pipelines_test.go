@@ -968,7 +968,7 @@ func TestPipelineImplementations(t *testing.T) {
 						migrationTotal := testMigration(
 							t, &ctx, &pipeline, &pipelines.PipelineConfig{
 								MigrationParallelWorkers: 4,
-								MigrationBatchSize:       4,
+								MigrationBatchSize:       8,
 								MigrationMaxSize:         maxSize,
 								MigrationStartOffset:     startOffset,
 							},
@@ -980,8 +980,8 @@ func TestPipelineImplementations(t *testing.T) {
 						startOffset += migrationTotal
 						testMigration(
 							t, &ctx, &pipeline, &pipelines.PipelineConfig{
-								MigrationParallelWorkers: 4,
-								MigrationBatchSize:       4,
+								MigrationParallelWorkers: 3,
+								MigrationBatchSize:       7,
 								MigrationMaxSize:         maxSize,
 								MigrationStartOffset:     startOffset,
 							},

@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-type ParallelConfig struct {
+type ParallelBatchConfig struct {
 	// Number of parallel workers
 	Units int
 	// Total items
@@ -33,10 +33,31 @@ type ChunkJob struct {
 	Size   uint64
 }
 
+// Run function in parallel workers
+func Parallel(units int, fn func(worker int)) *sync.WaitGroup {
+	// Normalize Units
+	if units <= 0 {
+		units = 1
+	}
+
+	var wg sync.WaitGroup
+
+	// Spawn workers
+	for i := 0; i < units; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			fn(worker)
+		}(i)
+	}
+
+	return &wg
+}
+
 // Process batch items in parallel
 func ParallelBatch(
 	ctx *context.Context,
-	config *ParallelConfig,
+	config *ParallelBatchConfig,
 	fn func(ctx *context.Context, job int, size, offset uint64),
 ) {
 
@@ -70,18 +91,13 @@ func ParallelBatch(
 
 	// Buffered channel holds all jobs
 	jobs := make(chan ChunkJob, batches)
-	var wg sync.WaitGroup
 
 	// Spawn workers
-	for range units {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				fn(ctx, job.ID, job.Size, job.Offset)
-			}
-		}()
-	}
+	wg := Parallel(units, func(worker int) {
+		for job := range jobs {
+			fn(ctx, job.ID, job.Size, job.Offset)
+		}
+	})
 
 	// Enqueue jobs
 	for i := uint64(0); i < batches; i++ {

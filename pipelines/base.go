@@ -18,6 +18,8 @@ import (
 	"github.com/sagadana/migrator/states"
 )
 
+const DefaultFetchBufferSize = 10240
+
 type PipelineConfig struct {
 	// Number of items to migrate per batch. 0 to disable batching
 	MigrationBatchSize uint64
@@ -452,82 +454,87 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 		config.OnMigrationStart(state)
 	}
 
-	// Process in parallel
-	parallel := helpers.ParallelConfig{
+	// Process reads in parallel
+	sourceBufferSize := max(DefaultFetchBufferSize, int(config.MigrationBatchSize))
+	source := make(chan datasources.DatasourceFetchResult, sourceBufferSize)
+	parallel := helpers.ParallelBatchConfig{
 		Units:       config.MigrationParallelWorkers,
 		BatchSize:   config.MigrationBatchSize,
 		Total:       total,
 		StartOffset: startOffet,
 	}
-	helpers.ParallelBatch(ctx, &parallel,
-		func(ctx *context.Context, job int, size, offset uint64) {
-			source := make(chan datasources.DatasourceFetchResult, 1)
+	helpers.ParallelBatch(ctx, &parallel, func(ctx *context.Context, job int, size, offset uint64) {
+		result := p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
+			Size:   size,
+			Offset: offset,
+		})
+		source <- result
+	})
 
-			// Read Items
-			go func() {
-				defer close(source)
-				result := p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
-					Size:   size,
-					Offset: offset,
-				})
-				source <- result
-			}()
+	// Process writes in parallel
+	helpers.Parallel(config.MigrationParallelWorkers, func(worker int) {
 
-			// Parse destination input from source
-			input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
-				if data.Err != nil {
-					err := fmt.Errorf("migration fetch error (%s): %w", p.ID, data.Err)
-					state.MigrationIssue = err.Error()
+		// Parse destination input from source
+		input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {
+			if data.Err != nil {
+				err := fmt.Errorf("migration fetch error (%s): %w", p.ID, data.Err)
+				state.MigrationIssue = err.Error()
 
-					if config.OnMigrationError != nil {
-						go config.OnMigrationError(
-							state,
-							datasources.DatasourcePushRequest{Inserts: data.Docs},
-							err,
-						)
-					}
-
-					if err := p.SetState(ctx, state); err != nil {
-						slog.Error("unexpected migration error", "error", err)
-					}
-				}
-				return datasources.DatasourcePushRequest{Inserts: data.Docs}
-			})
-
-			// Send to destination
-			p.migrate(ctx, input, func(result CallbackResult) {
-				// Lock state for concurrent progress updates
-				stateMutex.Lock()
-				defer stateMutex.Unlock()
-
-				previousOffset, _ := state.MigrationOffset.Int64()
-				previousTotal, _ := state.MigrationTotal.Int64()
-
-				// Track migration progress
-				state.MigrationStatus = states.MigrationStatusInProgress
-				if result.Err != nil {
-					err := fmt.Errorf("migration pipeline (%s) error: %w", p.ID, result.Err)
-					slog.Error(err.Error())
-
-					state.MigrationIssue = err.Error()
-					if config.OnMigrationError != nil {
-						defer config.OnMigrationError(state, *result.Failures, err)
-					}
-				} else if result.Count != nil {
-					state.MigrationOffset = json.Number(strconv.FormatUint(uint64(previousOffset)+result.Count.Inserts, 10))
-					state.MigrationTotal = json.Number(strconv.FormatUint(uint64(previousTotal)+result.Count.Inserts, 10))
-
-					slog.Info(fmt.Sprintf("Migration Progress: %s of %d. Offset: %d - %s", state.MigrationTotal, total, previousOffset, state.MigrationOffset))
-					if config.OnMigrationProgress != nil {
-						defer config.OnMigrationProgress(state, *result.Count)
-					}
+				if config.OnMigrationError != nil {
+					go config.OnMigrationError(
+						state,
+						datasources.DatasourcePushRequest{Inserts: data.Docs},
+						err,
+					)
 				}
 
 				if err := p.SetState(ctx, state); err != nil {
 					slog.Error("unexpected migration error", "error", err)
 				}
-			})
+			}
+			return datasources.DatasourcePushRequest{Inserts: data.Docs}
 		})
+
+		// Last worker & last job? close source chan
+		if worker == config.MigrationParallelWorkers-1 && len(source) <= sourceBufferSize {
+			close(source)
+		}
+
+		// Send to destination
+		p.migrate(ctx, input, func(result CallbackResult) {
+			// Lock state for concurrent progress updates
+			stateMutex.Lock()
+			defer stateMutex.Unlock()
+
+			previousOffset, _ := state.MigrationOffset.Int64()
+			previousTotal, _ := state.MigrationTotal.Int64()
+
+			// Track migration progress
+			state.MigrationStatus = states.MigrationStatusInProgress
+			if result.Err != nil {
+				err := fmt.Errorf("migration pipeline (%s) error: %w", p.ID, result.Err)
+				slog.Error(err.Error())
+
+				state.MigrationIssue = err.Error()
+				if config.OnMigrationError != nil {
+					defer config.OnMigrationError(state, *result.Failures, err)
+				}
+			} else if result.Count != nil {
+				state.MigrationOffset = json.Number(strconv.FormatUint(uint64(previousOffset)+result.Count.Inserts, 10))
+				state.MigrationTotal = json.Number(strconv.FormatUint(uint64(previousTotal)+result.Count.Inserts, 10))
+
+				slog.Info(fmt.Sprintf("Migration Progress (#%d): %s of %d. Offset: %d - %s", worker, state.MigrationTotal, total, previousOffset, state.MigrationOffset))
+				if config.OnMigrationProgress != nil {
+					defer config.OnMigrationProgress(state, *result.Count)
+				}
+			}
+
+			if err := p.SetState(ctx, state); err != nil {
+				slog.Error("unexpected migration error", "error", err)
+			}
+		})
+
+	}).Wait()
 
 	// Track: Success
 	state.MigrationStatus = states.MigrationStatusCompleted
