@@ -24,7 +24,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 - **Batch Migration**: Process migration in batches
 - **Parallel Migration**: Break data into chunks and load in parallel
 - **Continuous Replication**: Watch for new changes and replicate them
-- **Import/Export**: Import/Export data from/to CSV files
+- **Import & Export**: Load or save data from or to CSV file
 
 ## Datasources
 
