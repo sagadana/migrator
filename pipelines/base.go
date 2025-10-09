@@ -28,12 +28,14 @@ type PipelineConfig struct {
 	// Table / Collection offset to start reading from
 	MigrationStartOffset uint64
 	// Number of parallel workers used to read from source
-	MigrationParallelWorkers int
+	MigrationParallelWorkers uint
 
 	// Number of items to accumulate & replicate per batch
 	ReplicationBatchSize uint64
 	// How long to wait for data to be accumulated
 	ReplicationBatchWindowSecs uint64
+	// Number of parallel workers used to replicate changes
+	ReplicationParallelWorkers uint
 
 	// Migration Started Callback - Triggered synchronously when migration starts
 	OnMigrationStart func(state states.State)
@@ -463,7 +465,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 		Total:       total,
 		StartOffset: startOffet,
 	}
-	helpers.ParallelBatch(ctx, &parallel, func(ctx *context.Context, job int, size, offset uint64) {
+	helpers.ParallelBatch(ctx, &parallel, func(ctx *context.Context, job, size, offset uint64) {
 		result := p.From.Fetch(ctx, &datasources.DatasourceFetchRequest{
 			Size:   size,
 			Offset: offset,
@@ -472,7 +474,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 	})
 
 	// Process writes in parallel
-	helpers.Parallel(config.MigrationParallelWorkers, func(worker int) {
+	helpers.Parallel(config.MigrationParallelWorkers, func(worker uint) {
 
 		// Parse destination input from source
 		input := helpers.StreamTransform(source, func(data datasources.DatasourceFetchResult) datasources.DatasourcePushRequest {

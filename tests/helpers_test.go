@@ -20,7 +20,7 @@ import (
 
 // jobCall records one invocation of the user-supplied fn.
 type jobCall struct {
-	ID     int
+	ID     uint64
 	Size   uint64
 	Offset uint64
 	CtxPtr *context.Context
@@ -122,7 +122,7 @@ func TestParallelBatch(t *testing.T) {
 			mu := new(sync.Mutex)
 
 			// Wrap the fn to capture calls
-			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id int, size, offset uint64) {
+			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id, size, offset uint64) {
 				mu.Lock()
 				defer mu.Unlock()
 				calls = append(calls, jobCall{
