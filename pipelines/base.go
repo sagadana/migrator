@@ -34,8 +34,6 @@ type PipelineConfig struct {
 	ReplicationBatchSize uint64
 	// How long to wait for data to be accumulated
 	ReplicationBatchWindowSecs uint64
-	// Number of parallel workers used to replicate changes
-	ReplicationParallelWorkers uint
 
 	// Migration Started Callback - Triggered synchronously when migration starts
 	OnMigrationStart func(state states.State)
@@ -353,11 +351,11 @@ func (p *Pipeline) Stream(ctx *context.Context, config *PipelineConfig) error {
 
 			state.ReplicationIssue = err.Error()
 			if config.OnReplicationError != nil {
-				config.OnReplicationError(state, *result.Failures, err)
+				defer config.OnReplicationError(state, *result.Failures, err)
 			}
 
-			if err := p.SetState(ctx, state); err != nil {
-				slog.Error("unexpected migration error", "error", err)
+			if err = p.SetState(ctx, state); err != nil {
+				slog.Error("unexpected replication error", "error", err)
 			}
 		} else if result.Count != nil && config.OnReplicationProgress != nil {
 			config.OnReplicationProgress(state, *result.Count)
@@ -377,7 +375,7 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 
 	// Get current state
 	state, ok := p.GetState(ctx)
-	var stateMutex sync.RWMutex // To synchronize concurrent state updates
+	stateMutex := new(sync.RWMutex) // To synchronize concurrent state updates
 
 	var startOffet uint64
 	if ok {

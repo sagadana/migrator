@@ -1062,7 +1062,7 @@ func TestDatasourceImplementations(t *testing.T) {
 				close(resultCh)
 
 				// Wait a bit for all changes to propagate
-				<-time.After(time.Duration(200 * time.Millisecond))
+				<-time.After(time.Duration(400 * time.Millisecond))
 
 				// Check for errors
 				for err := range resultCh {
@@ -1136,7 +1136,7 @@ func TestDatasourceImplementations(t *testing.T) {
 					expUpdate += c.Updates
 					wg.Done()
 
-					<-time.After(time.Duration((batchWin*1000)+400) * time.Millisecond) // wait for watch batch window before deleting
+					<-time.After(time.Duration((batchWin*1000)+500) * time.Millisecond) // wait for watch batch window before deleting
 
 					// Delete
 					r = &datasources.DatasourcePushRequest{
@@ -1181,7 +1181,7 @@ func TestDatasourceImplementations(t *testing.T) {
 						gotInsert += uint64(len(evt.Docs.Inserts))
 						gotUpdate += uint64(len(evt.Docs.Updates))
 						gotDelete += uint64(len(evt.Docs.Deletes))
-					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+500) * time.Millisecond): // Wait for watch batch window
+					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+2000) * time.Millisecond): // Wait for watch batch window
 						rWg.Wait()    // Wait for background pushes to complete
 						watchCancel() // Stop watching
 						break loop

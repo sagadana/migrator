@@ -40,7 +40,7 @@ func Parallel(units uint, fn func(worker uint)) *sync.WaitGroup {
 		units = 1
 	}
 
-	var wg sync.WaitGroup
+	wg := new(sync.WaitGroup)
 
 	// Spawn workers
 	for i := uint(0); i < units; i++ {
@@ -51,7 +51,7 @@ func Parallel(units uint, fn func(worker uint)) *sync.WaitGroup {
 		}(i)
 	}
 
-	return &wg
+	return wg
 }
 
 // Process batch items in parallel

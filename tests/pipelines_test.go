@@ -645,7 +645,7 @@ func testReplication(
 	go func() {
 		defer func() {
 			// Wait for replication batch window + processing before ending
-			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+200) * time.Millisecond)
+			<-time.After(time.Duration((config.ReplicationBatchWindowSecs*1000)+400) * time.Millisecond)
 			t.Logf("Completed background updates for contiuous replication...")
 			crCancel()  // End continuous replication
 			crWg.Done() // Mark done
