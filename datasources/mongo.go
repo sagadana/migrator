@@ -165,6 +165,14 @@ func (ds *MongoDatasource) Client() *mongo.Client {
 	return ds.client
 }
 
+func (ds *MongoDatasource) Actions() *DatasourceActionResult {
+	return &DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: true,
+	}
+}
+
 // Get total count
 func (ds *MongoDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 	collection := ds.client.Database(ds.databaseName).Collection(ds.collectionName)

@@ -23,19 +23,19 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 - **Auto Resuming**: Resume from the last successful position - if failed
 - **Batch Migration**: Process migration in batches
 - **Parallel Migration**: Break data into chunks and load in parallel
-- **Continuous Replication**: Watch for new changes and replicate them
+- **Continuous Replication**: Watch for new changes and replicate them; A.K.A Change Data Capture (CDC)
 - **Import & Export**: Load or save data from or to CSV file
 
 ## Datasources
 
-| Datasource | Status | Read | Write | Migrate | Replicate                          |
-| ---------- | ------ | ---- | ----- | ------- | ---------------------------------- |
-| `Memory`   | ✅     | ✅   | ✅    | ✅      | ✅                                 |
-| `MongoDB`  | ✅     | ✅   | ✅    | ✅      | ✅ (_with change streams_)         |
-| `Redis`    | ✅     | ✅   | ✅    | ✅      | ✅ (_with keyspace notifications_) |
-| `Postgres` | ✅     | ✅   | ✅    | ✅      | ✅ (_with logical replication_)    |
-| `MySQL`    | ✅     | ✅   | ✅    | ✅      | ✅ (_with binlog replication_)     |
-| `<More>`   | Soon   | TBC  | TBC   | TBC     | TBC                                |
+| Datasource | Status | Read | Write | Stream                             |
+| ---------- | ------ | ---- | ----- | ---------------------------------- |
+| `Memory`   | ✅     | ✅   | ✅    | ✅                                 |
+| `MongoDB`  | ✅     | ✅   | ✅    | ✅ (_with change streams_)         |
+| `Redis`    | ✅     | ✅   | ✅    | ✅ (_with keyspace notifications_) |
+| `Postgres` | ✅     | ✅   | ✅    | ✅ (_with logical replication_)    |
+| `MySQL`    | ✅     | ✅   | ✅    | ✅ (_with binlog replication_)     |
+| `<More>`   | Soon   | TBC  | TBC   | TBC                                |
 
 ## State Stores
 

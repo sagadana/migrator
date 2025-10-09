@@ -44,6 +44,13 @@ const (
 // MockErrorDatasource is a test helper that simulates datasource errors
 type MockErrorDatasource struct{}
 
+func (m *MockErrorDatasource) Actions() *datasources.DatasourceActionResult {
+	return &datasources.DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: false,
+	}
+}
 func (m *MockErrorDatasource) Count(ctx *context.Context, request *datasources.DatasourceFetchRequest) uint64 {
 	return 5 // Report that there's data
 }
@@ -887,1012 +894,1034 @@ func TestDatasourceImplementations(t *testing.T) {
 			ctx, cancel := context.WithTimeout(testCtx, time.Duration(5)*time.Minute)
 			defer cancel()
 
-			t.Run("Test_CRUD", func(t *testing.T) {
-				td.source.Clear(&ctx)
+			actions := td.source.Actions()
 
-				// 1) Test Count on empty
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 0 {
-					t.Fatalf("⛔️ expected empty count=0, got %d", got)
-				}
+			// --------------------------------------------------------------------------
+			// Test Basic Read / Write actions
+			// --------------------------------------------------------------------------
+			if actions.Read && actions.Write {
+				t.Run("Test_CRUD", func(t *testing.T) {
+					td.source.Clear(&ctx)
 
-				// 2) Test Push: inserts only
-				pushReq := &datasources.DatasourcePushRequest{
-					Inserts: []map[string]any{
-						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
-					},
-				}
-				cnt, err := td.source.Push(&ctx, pushReq)
-				if err != nil {
-					t.Fatalf("⛔️ Push(inserts) error: %v", err)
-				}
-				if cnt.Inserts != 2 || cnt.Updates != 0 || cnt.Deletes != 0 {
-					t.Fatalf("⛔️ unexpected push count: %+v", cnt)
-					t.Errorf("❌ expectd docs inserts: %d, updates: %d, deletes: %d. Got inserts: %d, updates: %d, deletes: %d",
-						2, 0, 0, cnt.Inserts, cnt.Updates, cnt.Deletes)
-				}
-
-				// 3) Count after inserts
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 2 {
-					t.Errorf("❌ expected count=%d, got %d", uint64(len(pushReq.Inserts)), got)
-				}
-
-				// 4) Test Fetch: no filters
-				fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{Size: 0, Offset: 0})
-				if fetchRes.Err != nil {
-					t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
-				}
-				if len(fetchRes.Docs) != 2 || fetchRes.Start != 0 || fetchRes.End != uint64(len(pushReq.Inserts)) {
-					t.Errorf("❌ expectd docs size: %d, start: %d, end: %d. Got size: %d, start: %d, end: %d",
-						2, 0, len(pushReq.Inserts), len(fetchRes.Docs), fetchRes.Start, fetchRes.End)
-				}
-
-				// 5) Test Fetch: by IDs
-				fetchRes2 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"b"}})
-				if len(fetchRes2.Docs) != 1 || fmt.Sprintf("%v", fetchRes2.Docs[0][TestIDField]) != "b" {
-					t.Errorf("❌ expected single doc with id 'b', got %#v", fetchRes2.Docs)
-				}
-
-				// 6) Test Push: updates only (existing + non-existing)
-				pushUpd := &datasources.DatasourcePushRequest{
-					Updates: []map[string]any{
-						{TestIDField: "a", TestAField: "fooood"},
-						{TestIDField: "x", TestBField: "value"},
-					},
-				}
-				cntUpd, err := td.source.Push(&ctx, pushUpd)
-				if err != nil {
-					t.Fatalf("⛔️ Push(updates) error: %v", err)
-				}
-				if cntUpd.Updates != uint64(len(pushUpd.Updates)) {
-					t.Errorf("❌ expected %d update, got %d", uint64(len(pushUpd.Updates)), cntUpd.Updates)
-				}
-
-				// 7) Verify update applied
-				fetchRes3 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"a"}})
-				if len(fetchRes3.Docs) == 0 {
-					t.Errorf("❌ did not expect empty docs after update")
-				} else if fetchRes3.Docs[0][TestAField] != "fooood" {
-					t.Errorf("❌ expected %s='fooood', got %v", TestAField, fetchRes3.Docs[0][TestAField])
-				}
-
-				// 8) Test Push: deletes
-				pushDel := &datasources.DatasourcePushRequest{Deletes: []string{"a", "x"}}
-				cntDel, err := td.source.Push(&ctx, pushDel)
-				if err != nil {
-					t.Fatalf("⛔️ Push(deletes) error: %v", err)
-				}
-				if cntDel.Deletes != uint64(len(pushDel.Deletes)) {
-					t.Errorf("❌ expected %d delete, got %d", uint64(len(pushDel.Deletes)), cntDel.Deletes)
-				}
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 1 { // a,b,x - a,x = b(1)
-					t.Errorf("❌ expected count=1 after delete, got %d", got)
-				}
-			})
-
-			t.Run("Test_Concurrent_CRUD", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Number of concurrent operations
-				numOps := 10
-				wg := new(sync.WaitGroup)
-				wg.Add(numOps * 3) // Insert, Update, Delete operations
-
-				// Channel to collect results
-				resultCh := make(chan error, numOps*3)
-
-				// Concurrent inserts
-				insWg := new(sync.WaitGroup)
-				for i := range numOps {
-					insWg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						defer insWg.Done()
-						req := &datasources.DatasourcePushRequest{
-							Inserts: []map[string]any{
-								{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
-							},
-						}
-						_, err := td.source.Push(&ctx, req)
-						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
-						resultCh <- err
-					}(i)
-				}
-
-				// Wait for inserts to complete
-				insWg.Wait()
-
-				// Verify count after inserts
-				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != uint64(numOps) {
-					t.Errorf("❌ expected count=%d after concurrent inserts, got %d", numOps, count)
-				}
-
-				// Concurrent updates
-				updWg := new(sync.WaitGroup)
-				for i := range numOps {
-					updWg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						defer updWg.Done()
-						req := &datasources.DatasourcePushRequest{
-							Updates: []map[string]any{
-								{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("updated-%d", i)},
-							},
-						}
-						_, err := td.source.Push(&ctx, req)
-						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
-						resultCh <- err
-					}(i)
-				}
-
-				// Wait for updates to complete
-				updWg.Wait()
-
-				// Verify updates
-				res := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
-				for _, doc := range res.Docs {
-					id := doc[TestIDField].(string)
-					expected := fmt.Sprintf("updated-%s", id[len("concurrent-"):])
-					if doc[TestAField] != expected {
-						t.Errorf("❌ expected %s to be updated to %s, got %v", id, expected, doc[TestAField])
+					// 1) Test Count on empty
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 0 {
+						t.Fatalf("⛔️ expected empty count=0, got %d", got)
 					}
-				}
 
-				// Concurrent deletes
-				delWg := new(sync.WaitGroup)
-				for i := range numOps {
-					delWg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						defer delWg.Done()
-						req := &datasources.DatasourcePushRequest{
-							Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
-						}
-						_, err := td.source.Push(&ctx, req)
-						<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
-						resultCh <- err
-					}(i)
-				}
-
-				// Wait for delete to complete
-				delWg.Wait()
-
-				// Wait for all operations to complete
-				wg.Wait()
-				close(resultCh)
-
-				// Wait a bit for all changes to propagate
-				<-time.After(time.Duration(500 * time.Millisecond))
-
-				// Check for errors
-				for err := range resultCh {
+					// 2) Test Push: inserts only
+					pushReq := &datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo"},
+							{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+						},
+					}
+					cnt, err := td.source.Push(&ctx, pushReq)
 					if err != nil {
-						t.Errorf("❌ concurrent operation error: %v", err)
+						t.Fatalf("⛔️ Push(inserts) error: %v", err)
 					}
-				}
-
-				// Verify final count
-				if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != 0 {
-					t.Errorf("❌ expected count=0 after concurrent deletes, got %d", count)
-				}
-			})
-
-			t.Run("Test_Watch", func(t *testing.T) {
-				td.source.Clear(&ctx)
-				<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
-
-				evUpd := 3
-				evDel := 2
-				evIns := evUpd + evDel
-				evCnt := evIns + evUpd + evDel
-				batchWin := uint64(1)
-
-				// 1) Test watch: fire background pushes
-				streamReq := &datasources.DatasourceStreamRequest{BatchSize: uint64(evCnt), BatchWindowSeconds: batchWin}
-				watchCtx, watchCancel := context.WithTimeout(ctx, time.Duration(30)*time.Second)
-				watchCh := td.source.Watch(&watchCtx, streamReq)
-
-				var expInsert, expUpdate, expDelete uint64
-
-				wg := new(sync.WaitGroup)
-				wg.Add(3)
-				go func() {
-
-					<-time.After(time.Duration(200) * time.Millisecond) // wait a bit
-					random := helpers.RandomString(6)
-
-					// Insert
-					r := &datasources.DatasourcePushRequest{
-						Inserts: make([]map[string]any, 0),
+					if cnt.Inserts != 2 || cnt.Updates != 0 || cnt.Deletes != 0 {
+						t.Fatalf("⛔️ unexpected push count: %+v", cnt)
+						t.Errorf("❌ expectd docs inserts: %d, updates: %d, deletes: %d. Got inserts: %d, updates: %d, deletes: %d",
+							2, 0, 0, cnt.Inserts, cnt.Updates, cnt.Deletes)
 					}
-					for i := range evIns {
-						r.Inserts = append(r.Inserts, map[string]any{TestIDField: fmt.Sprintf("w%d", i)})
+
+					// 3) Count after inserts
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 2 {
+						t.Errorf("❌ expected count=%d, got %d", uint64(len(pushReq.Inserts)), got)
 					}
-					c, err := td.source.Push(&ctx, r)
+
+					// 4) Test Fetch: no filters
+					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{Size: 0, Offset: 0})
+					if fetchRes.Err != nil {
+						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+					}
+					if len(fetchRes.Docs) != 2 || fetchRes.Start != 0 || fetchRes.End != uint64(len(pushReq.Inserts)) {
+						t.Errorf("❌ expectd docs size: %d, start: %d, end: %d. Got size: %d, start: %d, end: %d",
+							2, 0, len(pushReq.Inserts), len(fetchRes.Docs), fetchRes.Start, fetchRes.End)
+					}
+
+					// 5) Test Fetch: by IDs
+					fetchRes2 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"b"}})
+					if len(fetchRes2.Docs) != 1 || fmt.Sprintf("%v", fetchRes2.Docs[0][TestIDField]) != "b" {
+						t.Errorf("❌ expected single doc with id 'b', got %#v", fetchRes2.Docs)
+					}
+
+					// 6) Test Push: updates only (existing + non-existing)
+					pushUpd := &datasources.DatasourcePushRequest{
+						Updates: []map[string]any{
+							{TestIDField: "a", TestAField: "fooood"},
+							{TestIDField: "x", TestBField: "value"},
+						},
+					}
+					cntUpd, err := td.source.Push(&ctx, pushUpd)
 					if err != nil {
-						t.Errorf("❌ background insert error: %s", err.Error())
+						t.Fatalf("⛔️ Push(updates) error: %v", err)
 					}
-					expInsert += c.Inserts
-					wg.Done()
-
-					<-time.After(time.Duration(200) * time.Millisecond) // wait a bit
-
-					// Update
-					r = &datasources.DatasourcePushRequest{
-						Updates: make([]map[string]any, 0),
+					if cntUpd.Updates != uint64(len(pushUpd.Updates)) {
+						t.Errorf("❌ expected %d update, got %d", uint64(len(pushUpd.Updates)), cntUpd.Updates)
 					}
-					for i := range evUpd {
-						// Last updated field contains filter out field - if filter supported
-						if td.withWatchFilter && i == evUpd-1 {
-							r.Updates = append(r.Updates, map[string]any{TestIDField: fmt.Sprintf("w%d", i), TestFilterOutField: "yes"})
-						} else {
-							r.Updates = append(r.Updates, map[string]any{TestIDField: fmt.Sprintf("w%d", i), TestBField: fmt.Sprintf("%s-%d", random, i)})
+
+					// 7) Verify update applied
+					fetchRes3 := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{IDs: []string{"a"}})
+					if len(fetchRes3.Docs) == 0 {
+						t.Errorf("❌ did not expect empty docs after update")
+					} else if fetchRes3.Docs[0][TestAField] != "fooood" {
+						t.Errorf("❌ expected %s='fooood', got %v", TestAField, fetchRes3.Docs[0][TestAField])
+					}
+
+					// 8) Test Push: deletes
+					pushDel := &datasources.DatasourcePushRequest{Deletes: []string{"a", "x"}}
+					cntDel, err := td.source.Push(&ctx, pushDel)
+					if err != nil {
+						t.Fatalf("⛔️ Push(deletes) error: %v", err)
+					}
+					if cntDel.Deletes != uint64(len(pushDel.Deletes)) {
+						t.Errorf("❌ expected %d delete, got %d", uint64(len(pushDel.Deletes)), cntDel.Deletes)
+					}
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 1 { // a,b,x - a,x = b(1)
+						t.Errorf("❌ expected count=1 after delete, got %d", got)
+					}
+				})
+
+				t.Run("Test_Concurrent_CRUD", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Number of concurrent operations
+					numOps := 10
+					wg := new(sync.WaitGroup)
+					wg.Add(numOps * 3) // Insert, Update, Delete operations
+
+					// Channel to collect results
+					resultCh := make(chan error, numOps*3)
+
+					// Concurrent inserts
+					insWg := new(sync.WaitGroup)
+					for i := range numOps {
+						insWg.Add(1)
+						go func(i int) {
+							defer wg.Done()
+							defer insWg.Done()
+							req := &datasources.DatasourcePushRequest{
+								Inserts: []map[string]any{
+									{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+								},
+							}
+							_, err := td.source.Push(&ctx, req)
+							<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+							resultCh <- err
+						}(i)
+					}
+
+					// Wait for inserts to complete
+					insWg.Wait()
+
+					// Verify count after inserts
+					if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != uint64(numOps) {
+						t.Errorf("❌ expected count=%d after concurrent inserts, got %d", numOps, count)
+					}
+
+					// Concurrent updates
+					updWg := new(sync.WaitGroup)
+					for i := range numOps {
+						updWg.Add(1)
+						go func(i int) {
+							defer wg.Done()
+							defer updWg.Done()
+							req := &datasources.DatasourcePushRequest{
+								Updates: []map[string]any{
+									{TestIDField: fmt.Sprintf("concurrent-%d", i), TestAField: fmt.Sprintf("updated-%d", i)},
+								},
+							}
+							_, err := td.source.Push(&ctx, req)
+							<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+							resultCh <- err
+						}(i)
+					}
+
+					// Wait for updates to complete
+					updWg.Wait()
+
+					// Verify updates
+					res := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+					for _, doc := range res.Docs {
+						id := doc[TestIDField].(string)
+						expected := fmt.Sprintf("updated-%s", id[len("concurrent-"):])
+						if doc[TestAField] != expected {
+							t.Errorf("❌ expected %s to be updated to %s, got %v", id, expected, doc[TestAField])
 						}
 					}
-					c, err = td.source.Push(&ctx, r)
-					if err != nil {
-						t.Errorf("❌ background update error: %s", err.Error())
-					}
-					expUpdate += c.Updates
-					wg.Done()
 
-					<-time.After(time.Duration((batchWin*1000)+500) * time.Millisecond) // wait for watch batch window before deleting
+					// Concurrent deletes
+					delWg := new(sync.WaitGroup)
+					for i := range numOps {
+						delWg.Add(1)
+						go func(i int) {
+							defer wg.Done()
+							defer delWg.Done()
+							req := &datasources.DatasourcePushRequest{
+								Deletes: []string{fmt.Sprintf("concurrent-%d", i)},
+							}
+							_, err := td.source.Push(&ctx, req)
+							<-time.After(time.Duration(100 * time.Millisecond)) // wait a bit for changes to propagate
+							resultCh <- err
+						}(i)
+					}
 
-					// Delete
-					r = &datasources.DatasourcePushRequest{
-						Deletes: make([]string, 0),
-					}
-					for i := evUpd; i < evIns; i++ {
-						r.Deletes = append(r.Deletes, fmt.Sprintf("w%d", i))
-					}
-					c, err = td.source.Push(&ctx, r)
-					if err != nil {
-						t.Errorf("❌ background delete error: %s", err.Error())
-					}
-					expDelete += c.Deletes
-					wg.Done()
-				}()
+					// Wait for delete to complete
+					delWg.Wait()
 
-				// Wait for background pushes to run
-				rWg := new(sync.WaitGroup)
-				rWg.Add(1)
-				go func() {
-					defer rWg.Done()
+					// Wait for all operations to complete
 					wg.Wait()
+					close(resultCh)
 
-					if expInsert != uint64(evIns) {
-						t.Errorf("❌ background inserts: expected %d, got %d", evIns, expInsert)
-					}
-					if expUpdate != uint64(evUpd) {
-						t.Errorf("❌ background updates: expected %d, got %d", evUpd, expUpdate)
-					}
-					if expDelete != uint64(evDel) {
-						t.Errorf("❌ background deletes: expected %d, got %d", evDel, expDelete)
-					}
-				}()
+					// Wait a bit for all changes to propagate
+					<-time.After(time.Duration(500 * time.Millisecond))
 
-				// 2) Test watch: event listener
-				var gotInsert, gotUpdate, gotDelete uint64
-
-			loop:
-				for {
-					select {
-					case evt := <-watchCh:
-						gotInsert += uint64(len(evt.Docs.Inserts))
-						gotUpdate += uint64(len(evt.Docs.Updates))
-						gotDelete += uint64(len(evt.Docs.Deletes))
-					case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+2000) * time.Millisecond): // Wait for watch batch window
-						rWg.Wait()    // Wait for background pushes to complete
-						watchCancel() // Stop watching
-						break loop
-					}
-				}
-
-				// Verify upserts - as some datasources only supports upserts
-				if td.withWatchFilter && (gotInsert+gotUpdate) != (expInsert+(expUpdate-1)) { // Expexts 1 less if filter enabled
-					t.Errorf("❌ watch upserts: expected %d, got %d", (expInsert + (expUpdate - 1)), (gotInsert + gotUpdate))
-				} else if !td.withWatchFilter && (gotInsert+gotUpdate) != (expInsert+expUpdate) {
-					t.Errorf("❌ watch upserts: expected %d, got %d", (expInsert + expUpdate), (gotInsert + gotUpdate))
-				}
-
-				// Verify deletes
-				if gotDelete != expDelete {
-					t.Errorf("❌ watch deletes: expected %d, got %d", expDelete, gotDelete)
-				}
-			})
-
-			t.Run("Test_Watch_Multiple_Workers", func(t *testing.T) {
-				td.source.Clear(&ctx)
-				<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
-
-				const numWorkers = 3
-				const numEvents = 10
-				const watchTimeout = 15 * time.Second
-
-				// Setup test context with timeout
-				testCtx, testCancel := context.WithTimeout(ctx, watchTimeout)
-				defer testCancel()
-
-				// Track events from multiple watchers
-				var wg sync.WaitGroup
-				eventCounts := make([]int, numWorkers)
-				allEvents := make([][]datasources.DatasourceStreamResult, numWorkers)
-				mu := new(sync.Mutex)
-
-				// Start multiple watchers
-				watchCtx, watchCancel := context.WithCancel(testCtx)
-				defer watchCancel()
-
-				for i := range numWorkers {
-					wg.Add(1)
-					go func(workerID int) {
-						defer wg.Done()
-
-						// Create watch request
-						streamReq := &datasources.DatasourceStreamRequest{
-							BatchSize:          3,
-							BatchWindowSeconds: 1,
+					// Check for errors
+					for err := range resultCh {
+						if err != nil {
+							t.Errorf("❌ concurrent operation error: %v", err)
 						}
+					}
 
-						stream := td.source.Watch(&watchCtx, streamReq)
-						count := 0
-						events := make([]datasources.DatasourceStreamResult, 0)
+					// Verify final count
+					if count := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); count != 0 {
+						t.Errorf("❌ expected count=0 after concurrent deletes, got %d", count)
+					}
+				})
+			}
 
-						for {
-							select {
-							case event, ok := <-stream:
-								if !ok {
-									// Stream closed
+			// --------------------------------------------------------------------------
+			// Test Stream / Watch if supported
+			// --------------------------------------------------------------------------
+			if actions.Stream {
+				t.Run("Test_Watch", func(t *testing.T) {
+					td.source.Clear(&ctx)
+					<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
+
+					evUpd := 3
+					evDel := 2
+					evIns := evUpd + evDel
+					evCnt := evIns + evUpd + evDel
+					batchWin := uint64(1)
+
+					// 1) Test watch: fire background pushes
+					streamReq := &datasources.DatasourceStreamRequest{BatchSize: uint64(evCnt), BatchWindowSeconds: batchWin}
+					watchCtx, watchCancel := context.WithTimeout(ctx, time.Duration(30)*time.Second)
+					watchCh := td.source.Watch(&watchCtx, streamReq)
+
+					var expInsert, expUpdate, expDelete uint64
+
+					wg := new(sync.WaitGroup)
+					wg.Add(3)
+					go func() {
+
+						<-time.After(time.Duration(200) * time.Millisecond) // wait a bit
+						random := helpers.RandomString(6)
+
+						// Insert
+						r := &datasources.DatasourcePushRequest{
+							Inserts: make([]map[string]any, 0),
+						}
+						for i := range evIns {
+							r.Inserts = append(r.Inserts, map[string]any{TestIDField: fmt.Sprintf("w%d", i)})
+						}
+						c, err := td.source.Push(&ctx, r)
+						if err != nil {
+							t.Errorf("❌ background insert error: %s", err.Error())
+						}
+						expInsert += c.Inserts
+						wg.Done()
+
+						<-time.After(time.Duration(200) * time.Millisecond) // wait a bit
+
+						// Update
+						r = &datasources.DatasourcePushRequest{
+							Updates: make([]map[string]any, 0),
+						}
+						for i := range evUpd {
+							// Last updated field contains filter out field - if filter supported
+							if td.withWatchFilter && i == evUpd-1 {
+								r.Updates = append(r.Updates, map[string]any{TestIDField: fmt.Sprintf("w%d", i), TestFilterOutField: "yes"})
+							} else {
+								r.Updates = append(r.Updates, map[string]any{TestIDField: fmt.Sprintf("w%d", i), TestBField: fmt.Sprintf("%s-%d", random, i)})
+							}
+						}
+						c, err = td.source.Push(&ctx, r)
+						if err != nil {
+							t.Errorf("❌ background update error: %s", err.Error())
+						}
+						expUpdate += c.Updates
+						wg.Done()
+
+						<-time.After(time.Duration((batchWin*1000)+500) * time.Millisecond) // wait for watch batch window before deleting
+
+						// Delete
+						r = &datasources.DatasourcePushRequest{
+							Deletes: make([]string, 0),
+						}
+						for i := evUpd; i < evIns; i++ {
+							r.Deletes = append(r.Deletes, fmt.Sprintf("w%d", i))
+						}
+						c, err = td.source.Push(&ctx, r)
+						if err != nil {
+							t.Errorf("❌ background delete error: %s", err.Error())
+						}
+						expDelete += c.Deletes
+						wg.Done()
+					}()
+
+					// Wait for background pushes to run
+					rWg := new(sync.WaitGroup)
+					rWg.Add(1)
+					go func() {
+						defer rWg.Done()
+						wg.Wait()
+
+						if expInsert != uint64(evIns) {
+							t.Errorf("❌ background inserts: expected %d, got %d", evIns, expInsert)
+						}
+						if expUpdate != uint64(evUpd) {
+							t.Errorf("❌ background updates: expected %d, got %d", evUpd, expUpdate)
+						}
+						if expDelete != uint64(evDel) {
+							t.Errorf("❌ background deletes: expected %d, got %d", evDel, expDelete)
+						}
+					}()
+
+					// 2) Test watch: event listener
+					var gotInsert, gotUpdate, gotDelete uint64
+
+				loop:
+					for {
+						select {
+						case evt := <-watchCh:
+							gotInsert += uint64(len(evt.Docs.Inserts))
+							gotUpdate += uint64(len(evt.Docs.Updates))
+							gotDelete += uint64(len(evt.Docs.Deletes))
+						case <-time.After(time.Duration((streamReq.BatchWindowSeconds*1000)+2000) * time.Millisecond): // Wait for watch batch window
+							rWg.Wait()    // Wait for background pushes to complete
+							watchCancel() // Stop watching
+							break loop
+						}
+					}
+
+					// Verify upserts - as some datasources only supports upserts
+					if td.withWatchFilter && (gotInsert+gotUpdate) != (expInsert+(expUpdate-1)) { // Expexts 1 less if filter enabled
+						t.Errorf("❌ watch upserts: expected %d, got %d", (expInsert + (expUpdate - 1)), (gotInsert + gotUpdate))
+					} else if !td.withWatchFilter && (gotInsert+gotUpdate) != (expInsert+expUpdate) {
+						t.Errorf("❌ watch upserts: expected %d, got %d", (expInsert + expUpdate), (gotInsert + gotUpdate))
+					}
+
+					// Verify deletes
+					if gotDelete != expDelete {
+						t.Errorf("❌ watch deletes: expected %d, got %d", expDelete, gotDelete)
+					}
+				})
+
+				t.Run("Test_Watch_Multiple_Workers", func(t *testing.T) {
+					td.source.Clear(&ctx)
+					<-time.After(time.Duration(500) * time.Millisecond) // Wait for previous push events to complete
+
+					const numWorkers = 3
+					const numEvents = 10
+					const watchTimeout = 15 * time.Second
+
+					// Setup test context with timeout
+					testCtx, testCancel := context.WithTimeout(ctx, watchTimeout)
+					defer testCancel()
+
+					// Track events from multiple watchers
+					var wg sync.WaitGroup
+					eventCounts := make([]int, numWorkers)
+					allEvents := make([][]datasources.DatasourceStreamResult, numWorkers)
+					mu := new(sync.Mutex)
+
+					// Start multiple watchers
+					watchCtx, watchCancel := context.WithCancel(testCtx)
+					defer watchCancel()
+
+					for i := range numWorkers {
+						wg.Add(1)
+						go func(workerID int) {
+							defer wg.Done()
+
+							// Create watch request
+							streamReq := &datasources.DatasourceStreamRequest{
+								BatchSize:          3,
+								BatchWindowSeconds: 1,
+							}
+
+							stream := td.source.Watch(&watchCtx, streamReq)
+							count := 0
+							events := make([]datasources.DatasourceStreamResult, 0)
+
+							for {
+								select {
+								case event, ok := <-stream:
+									if !ok {
+										// Stream closed
+										mu.Lock()
+										eventCounts[workerID] = count
+										allEvents[workerID] = events
+										mu.Unlock()
+										return
+									}
+
+									count += (len(event.Docs.Inserts) + len(event.Docs.Updates) + len(event.Docs.Deletes))
+									events = append(events, event)
+
+								case <-watchCtx.Done():
 									mu.Lock()
 									eventCounts[workerID] = count
 									allEvents[workerID] = events
 									mu.Unlock()
 									return
 								}
+							}
+						}(i)
+					}
 
-								count += (len(event.Docs.Inserts) + len(event.Docs.Updates) + len(event.Docs.Deletes))
-								events = append(events, event)
+					// Give watchers time to start
+					<-time.After(500 * time.Millisecond)
 
-							case <-watchCtx.Done():
-								mu.Lock()
-								eventCounts[workerID] = count
-								allEvents[workerID] = events
-								mu.Unlock()
-								return
+					// Insert test data to generate events
+					for i := 1; i <= numEvents; i++ {
+						data := datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{
+								{TestIDField: fmt.Sprintf("worker-test-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+							},
+						}
+						_, err := td.source.Push(&testCtx, &data)
+						if err != nil {
+							t.Errorf("❌ Failed to insert test data %d: %v", i, err)
+						}
+						<-time.After(100 * time.Millisecond) // Small delay between inserts
+					}
+
+					// Wait a bit for events to propagate, then cancel watchers
+					<-time.After(1000 * time.Millisecond)
+					watchCancel()
+
+					// Wait for all watchers to finish
+					wg.Wait()
+
+					// Analyze results
+					mu.Lock()
+					defer mu.Unlock()
+
+					totalEvents := 0
+					for _, count := range eventCounts {
+						totalEvents += count
+					}
+					if totalEvents != numEvents {
+						t.Errorf("❌ Total events mismatch: expected %d, got %d", numEvents, totalEvents)
+					}
+
+					// Verify that workers are sharing the load (not all workers need to receive events)
+					workersWithEvents := 0
+					for _, count := range eventCounts {
+						if count > 0 {
+							workersWithEvents++
+						}
+					}
+					if workersWithEvents != numWorkers {
+						t.Errorf("❌ Not all workers received events: %d out of %d", workersWithEvents, numWorkers)
+					}
+
+					// Verify total event count matches expectations (workers share the processing)
+					if totalEvents == 0 {
+						t.Error("❌ No events were received by any worker!")
+					} else if totalEvents < numEvents {
+						t.Errorf("❌ Some events were missed: got %d, expected %d", totalEvents, numEvents)
+					} else if totalEvents > numEvents {
+						t.Errorf("❌ More events received than expected: got %d, expected %d (duplicate events detected)", totalEvents, numEvents)
+					}
+
+					// Verify event content consistency
+					allSeenIDs := make(map[string]int) // Track how many times each ID was seen
+					for _, events := range allEvents {
+						for _, event := range events {
+							// Merge insert IDs and update IDs - for upsert scenarios
+							mergeIDs := append(event.Docs.Inserts, event.Docs.Updates...)
+							for _, insert := range mergeIDs {
+								if idVal, ok := insert[TestIDField]; ok {
+									idStr := fmt.Sprintf("%v", idVal)
+									allSeenIDs[idStr]++
+								}
 							}
 						}
-					}(i)
-				}
+					}
 
-				// Give watchers time to start
-				<-time.After(500 * time.Millisecond)
+					// Check that we saw each expected ID exactly once across all workers
+					for i := 1; i <= numEvents; i++ {
+						expectedID := fmt.Sprintf("worker-test-%d", i)
+						if count, exists := allSeenIDs[expectedID]; !exists {
+							t.Errorf("❌ Expected ID %s was not seen by any worker", expectedID)
+						} else if count != 1 {
+							t.Errorf("❌ ID %s was seen %d times across all workers (expected exactly 1 for shared processing)", expectedID, count)
+						}
+					}
+				})
+			}
 
-				// Insert test data to generate events
-				for i := 1; i <= numEvents; i++ {
+			// --------------------------------------------------------------------------
+			// Test Reads (Fetch, Count, Import, Sort, Filters) if supported
+			// --------------------------------------------------------------------------
+			if actions.Read {
+				t.Run("Test_Fetch", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Add more data
 					data := datasources.DatasourcePushRequest{
 						Inserts: []map[string]any{
-							{TestIDField: fmt.Sprintf("worker-test-%d", i), TestAField: fmt.Sprintf("value-%d", i)},
+							{TestIDField: "a", TestAField: "foo"},
+							{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+							{TestIDField: "c", TestAField: "bars", TestBField: "1234"},
+							{TestIDField: "d", TestAField: "barss", TestBField: "1235"},
+							{TestIDField: "e", TestAField: "barsss", TestBField: "1236"},
 						},
 					}
-					_, err := td.source.Push(&testCtx, &data)
+					_, err := td.source.Push(&ctx, &data)
 					if err != nil {
-						t.Errorf("❌ Failed to insert test data %d: %v", i, err)
+						t.Fatalf("⛔️ Push error: %s", err)
 					}
-					<-time.After(100 * time.Millisecond) // Small delay between inserts
-				}
 
-				// Wait a bit for events to propagate, then cancel watchers
-				<-time.After(1000 * time.Millisecond)
-				watchCancel()
-
-				// Wait for all watchers to finish
-				wg.Wait()
-
-				// Analyze results
-				mu.Lock()
-				defer mu.Unlock()
-
-				totalEvents := 0
-				for _, count := range eventCounts {
-					totalEvents += count
-				}
-				if totalEvents != numEvents {
-					t.Errorf("❌ Total events mismatch: expected %d, got %d", numEvents, totalEvents)
-				}
-
-				// Verify that workers are sharing the load (not all workers need to receive events)
-				workersWithEvents := 0
-				for _, count := range eventCounts {
-					if count > 0 {
-						workersWithEvents++
+					// Get current count
+					currentCount := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{})
+					if currentCount != uint64(len(data.Inserts)) {
+						t.Fatalf("⛔️ Get current count: expected count = %d, got %d", len(data.Inserts), currentCount)
 					}
-				}
-				if workersWithEvents != numWorkers {
-					t.Errorf("❌ Not all workers received events: %d out of %d", workersWithEvents, numWorkers)
-				}
 
-				// Verify total event count matches expectations (workers share the processing)
-				if totalEvents == 0 {
-					t.Error("❌ No events were received by any worker!")
-				} else if totalEvents < numEvents {
-					t.Errorf("❌ Some events were missed: got %d, expected %d", totalEvents, numEvents)
-				} else if totalEvents > numEvents {
-					t.Errorf("❌ More events received than expected: got %d, expected %d (duplicate events detected)", totalEvents, numEvents)
-				}
+					// Table-driven tests for Fetch, similar to Test_Count
+					type fetchTest struct {
+						name        string
+						req         *datasources.DatasourceFetchRequest
+						expectLen   int
+						expectStart uint64
+						expectEnd   uint64
+					}
 
-				// Verify event content consistency
-				allSeenIDs := make(map[string]int) // Track how many times each ID was seen
-				for _, events := range allEvents {
-					for _, event := range events {
-						// Merge insert IDs and update IDs - for upsert scenarios
-						mergeIDs := append(event.Docs.Inserts, event.Docs.Updates...)
-						for _, insert := range mergeIDs {
-							if idVal, ok := insert[TestIDField]; ok {
-								idStr := fmt.Sprintf("%v", idVal)
-								allSeenIDs[idStr]++
+					fetchTests := []fetchTest{
+						{
+							name:        "Fetch_SizeAndOffsetWithinRange",
+							req:         &datasources.DatasourceFetchRequest{Size: 1, Offset: 0},
+							expectLen:   1,
+							expectStart: 0,
+							expectEnd:   1,
+						},
+						{
+							name:        "Fetch_SizeAndOffsetExceedingTotal",
+							req:         &datasources.DatasourceFetchRequest{Size: currentCount + 5, Offset: currentCount + 2},
+							expectLen:   0,
+							expectStart: 0,
+							expectEnd:   0,
+						},
+						{
+							name:        "Fetch_SizeGreaterThanTotal_OffsetWithinRange",
+							req:         &datasources.DatasourceFetchRequest{Size: currentCount + 5, Offset: currentCount - 2},
+							expectLen:   int(currentCount - (currentCount - 2)),
+							expectStart: currentCount - 2,
+							expectEnd:   currentCount,
+						},
+						{
+							name:        "Fetch_OffsetEqualToTotal",
+							req:         &datasources.DatasourceFetchRequest{Size: 1, Offset: currentCount},
+							expectLen:   0,
+							expectStart: 0,
+							expectEnd:   0,
+						},
+						{
+							name:        "Fetch_SizeZeroAndOffsetZero",
+							req:         &datasources.DatasourceFetchRequest{Size: 0, Offset: 0},
+							expectLen:   int(currentCount),
+							expectStart: 0,
+							expectEnd:   currentCount,
+						},
+					}
+
+					for _, tc := range fetchTests {
+						t.Run(tc.name, func(t *testing.T) {
+							fetchRes := td.source.Fetch(&ctx, tc.req)
+							if fetchRes.Err != nil {
+								t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
 							}
+							if len(fetchRes.Docs) != tc.expectLen || fetchRes.Start != tc.expectStart || fetchRes.End != tc.expectEnd {
+								t.Errorf("❌ %s: expected len=%d, start=%d, end=%d, got len=%d, start=%d, end=%d, result: %#v",
+									tc.name, tc.expectLen, tc.expectStart, tc.expectEnd,
+									len(fetchRes.Docs), fetchRes.Start, fetchRes.End, fetchRes)
+							}
+						})
+					}
+				})
+
+				t.Run("Test_Count", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "a", TestAField: "foo"},
+							{TestIDField: "b", TestAField: "bar", TestBField: "123"},
+							{TestIDField: "c", TestAField: "baz", TestBField: "456"},
+							{TestIDField: "d", TestAField: "qux", TestBField: "789"},
+							{TestIDField: "e", TestAField: "quux", TestBField: "1011"},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					total := uint64(len(data.Inserts))
+
+					tests := []struct {
+						name   string
+						req    *datasources.DatasourceFetchRequest
+						expect uint64
+					}{
+						{
+							name:   "Count_All",
+							req:    &datasources.DatasourceFetchRequest{},
+							expect: total,
+						},
+						{
+							name:   "Count_SingleID",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a"}},
+							expect: 1,
+						},
+						{
+							name:   "Count_MultipleIDs",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}},
+							expect: 3,
+						},
+						{
+							name:   "Count_NonExistingID",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"z"}},
+							expect: 0,
+						},
+						{
+							name:   "Count_SizeLessThanTotal",
+							req:    &datasources.DatasourceFetchRequest{Size: 2},
+							expect: 2,
+						},
+						{
+							name:   "Count_SizeGreaterThanTotal",
+							req:    &datasources.DatasourceFetchRequest{Size: total + 5},
+							expect: total,
+						},
+						{
+							name:   "Count_OffsetWithinRange",
+							req:    &datasources.DatasourceFetchRequest{Offset: 2},
+							expect: total - 2,
+						},
+						{
+							name:   "Count_OffsetEqualsTotal",
+							req:    &datasources.DatasourceFetchRequest{Offset: total},
+							expect: 0,
+						},
+						{
+							name:   "Count_OffsetGreaterThanTotal",
+							req:    &datasources.DatasourceFetchRequest{Offset: total + 1},
+							expect: 0,
+						},
+						{
+							name:   "Count_SizeAndOffsetWithinRange",
+							req:    &datasources.DatasourceFetchRequest{Size: 2, Offset: 1},
+							expect: 2,
+						},
+						{
+							name:   "Count_SizeAndOffsetExceedingTotal",
+							req:    &datasources.DatasourceFetchRequest{Size: 10, Offset: total - 1},
+							expect: 1,
+						},
+						{
+							name:   "Count_SizeZeroOffsetZero",
+							req:    &datasources.DatasourceFetchRequest{Size: 0, Offset: 0},
+							expect: total,
+						},
+						{
+							name:   "Count_SizeZeroOffsetNonZero",
+							req:    &datasources.DatasourceFetchRequest{Size: 0, Offset: 2},
+							expect: total - 2,
+						},
+						{
+							name:   "Count_IDsWithOffset",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Offset: 1},
+							expect: 2,
+						},
+						{
+							name:   "Count_IDsWithSize",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 2},
+							expect: 2,
+						},
+						{
+							name:   "Count_IDsWithSizeAndOffset",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 1, Offset: 2},
+							expect: 1,
+						},
+						{
+							name:   "Count_IDsWithSizeAndOffsetExceeding",
+							req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 5, Offset: 2},
+							expect: 1,
+						},
+					}
+
+					for _, tc := range tests {
+						t.Run(tc.name, func(t *testing.T) {
+							got := td.source.Count(&ctx, tc.req)
+							if got != tc.expect {
+								t.Errorf("❌ %s: expected %d, got %d (req: %+v)", tc.name, tc.expect, got, tc.req)
+							}
+						})
+					}
+				})
+
+				// Test filtering if available
+				if td.withFilter {
+					t.Run("Test_Fetch_Filter", func(t *testing.T) {
+						td.source.Clear(&ctx)
+
+						// Insert test data with and without deletedAt field
+						data := datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{
+								{TestIDField: "a", TestAField: "foo", TestFilterOutField: true},
+								{TestIDField: "b", TestAField: "bar"},
+							},
 						}
-					}
-				}
+						_, err := td.source.Push(&ctx, &data)
+						if err != nil {
+							t.Fatalf("⛔️ Push error: %s", err)
+						}
 
-				// Check that we saw each expected ID exactly once across all workers
-				for i := 1; i <= numEvents; i++ {
-					expectedID := fmt.Sprintf("worker-test-%d", i)
-					if count, exists := allSeenIDs[expectedID]; !exists {
-						t.Errorf("❌ Expected ID %s was not seen by any worker", expectedID)
-					} else if count != 1 {
-						t.Errorf("❌ ID %s was seen %d times across all workers (expected exactly 1 for shared processing)", expectedID, count)
-					}
-				}
-			})
-
-			t.Run("Test_Fetch", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Add more data
-				data := datasources.DatasourcePushRequest{
-					Inserts: []map[string]any{
-						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
-						{TestIDField: "c", TestAField: "bars", TestBField: "1234"},
-						{TestIDField: "d", TestAField: "barss", TestBField: "1235"},
-						{TestIDField: "e", TestAField: "barsss", TestBField: "1236"},
-					},
-				}
-				_, err := td.source.Push(&ctx, &data)
-				if err != nil {
-					t.Fatalf("⛔️ Push error: %s", err)
-				}
-
-				// Get current count
-				currentCount := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{})
-				if currentCount != uint64(len(data.Inserts)) {
-					t.Fatalf("⛔️ Get current count: expected count = %d, got %d", len(data.Inserts), currentCount)
-				}
-
-				// Table-driven tests for Fetch, similar to Test_Count
-				type fetchTest struct {
-					name        string
-					req         *datasources.DatasourceFetchRequest
-					expectLen   int
-					expectStart uint64
-					expectEnd   uint64
-				}
-
-				fetchTests := []fetchTest{
-					{
-						name:        "Fetch_SizeAndOffsetWithinRange",
-						req:         &datasources.DatasourceFetchRequest{Size: 1, Offset: 0},
-						expectLen:   1,
-						expectStart: 0,
-						expectEnd:   1,
-					},
-					{
-						name:        "Fetch_SizeAndOffsetExceedingTotal",
-						req:         &datasources.DatasourceFetchRequest{Size: currentCount + 5, Offset: currentCount + 2},
-						expectLen:   0,
-						expectStart: 0,
-						expectEnd:   0,
-					},
-					{
-						name:        "Fetch_SizeGreaterThanTotal_OffsetWithinRange",
-						req:         &datasources.DatasourceFetchRequest{Size: currentCount + 5, Offset: currentCount - 2},
-						expectLen:   int(currentCount - (currentCount - 2)),
-						expectStart: currentCount - 2,
-						expectEnd:   currentCount,
-					},
-					{
-						name:        "Fetch_OffsetEqualToTotal",
-						req:         &datasources.DatasourceFetchRequest{Size: 1, Offset: currentCount},
-						expectLen:   0,
-						expectStart: 0,
-						expectEnd:   0,
-					},
-					{
-						name:        "Fetch_SizeZeroAndOffsetZero",
-						req:         &datasources.DatasourceFetchRequest{Size: 0, Offset: 0},
-						expectLen:   int(currentCount),
-						expectStart: 0,
-						expectEnd:   currentCount,
-					},
-				}
-
-				for _, tc := range fetchTests {
-					t.Run(tc.name, func(t *testing.T) {
-						fetchRes := td.source.Fetch(&ctx, tc.req)
+						// Fetch should return only non-deleted records due to filter
+						fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
 						if fetchRes.Err != nil {
 							t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
 						}
-						if len(fetchRes.Docs) != tc.expectLen || fetchRes.Start != tc.expectStart || fetchRes.End != tc.expectEnd {
-							t.Errorf("❌ %s: expected len=%d, start=%d, end=%d, got len=%d, start=%d, end=%d, result: %#v",
-								tc.name, tc.expectLen, tc.expectStart, tc.expectEnd,
-								len(fetchRes.Docs), fetchRes.Start, fetchRes.End, fetchRes)
+						if len(fetchRes.Docs) != 1 || fetchRes.Docs[0][TestIDField] != "b" {
+							t.Errorf("❌ expected single non-deleted doc with id 'b', got %#v", fetchRes.Docs)
 						}
 					})
 				}
-			})
 
-			t.Run("Test_Push", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				tests := []struct {
-					name   string
-					req    *datasources.DatasourcePushRequest
-					expect struct {
-						inserts uint64
-						updates uint64
-						deletes uint64
-						err     bool
-					}
-				}{
-					{
-						name: "Basic_Insert",
-						req: &datasources.DatasourcePushRequest{
-							Inserts: []map[string]any{
-								{TestIDField: "a", TestAField: "foo"},
-								{TestIDField: "b", TestAField: "bar", TestBField: "123"},
-							},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{inserts: 2},
-					},
-					{
-						name: "Invalid_Inserts",
-						req: &datasources.DatasourcePushRequest{
-							Inserts: []map[string]any{
-								nil,
-								{},
-								{TestAField: "no-id"},
-							},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{err: true},
-					},
-					{
-						name: "Basic_Update",
-						req: &datasources.DatasourcePushRequest{
-							Updates: []map[string]any{
-								{TestIDField: "a", TestAField: "updated"},
-							},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{updates: 1},
-					},
-					{
-						name: "Invalid_Updates",
-						req: &datasources.DatasourcePushRequest{
-							Updates: []map[string]any{
-								nil,
-								{},
-								{TestAField: "no-id"},
-								{TestIDField: "a", TestAField: "updated-v2"},
-							},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{err: true, updates: 1},
-					},
-					{
-						name: "Basic_Delete",
-						req: &datasources.DatasourcePushRequest{
-							Deletes: []string{"a"},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{deletes: 1},
-					},
-					{
-						name: "Invalid_Deletes",
-						req: &datasources.DatasourcePushRequest{
-							Deletes: []string{"non-existent"},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{deletes: 1}, // Most implementations count attempted deletes
-					},
-					{
-						name: "Mixed_Operations",
-						req: &datasources.DatasourcePushRequest{
-							Inserts: []map[string]any{{TestIDField: "c", TestAField: "new"}},
-							Updates: []map[string]any{{TestIDField: "b", TestAField: "changed"}},
-							Deletes: []string{"a"},
-						},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{inserts: 1, updates: 1, deletes: 1},
-					},
-					{
-						name: "Empty_Request",
-						req:  &datasources.DatasourcePushRequest{},
-						expect: struct {
-							inserts uint64
-							updates uint64
-							deletes uint64
-							err     bool
-						}{},
-					},
-				}
-
-				for _, tt := range tests {
-					t.Run(tt.name, func(t *testing.T) {
+				// Test sorting if available
+				if td.withSort {
+					t.Run("Test_Fetch_Sort", func(t *testing.T) {
 						td.source.Clear(&ctx)
 
-						// Setup initial data if needed
-						if tt.name != "Basic_Insert" {
-							setup := &datasources.DatasourcePushRequest{
+						// Insert test data with sort field in descending order
+						data := datasources.DatasourcePushRequest{
+							Inserts: []map[string]any{
+								{TestIDField: "a", TestAField: "foo", TestSortAscField: 4},
+								{TestIDField: "d", TestAField: "qux", TestSortAscField: 1},
+								{TestIDField: "b", TestAField: "bar", TestSortAscField: 3},
+								{TestIDField: "c", TestAField: "baz", TestSortAscField: 2},
+							},
+						}
+						_, err := td.source.Push(&ctx, &data)
+						if err != nil {
+							t.Fatalf("⛔️ Push error: %s", err)
+						}
+
+						// Fetch should return records sorted by TestSortAscField in ascending order
+						fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
+						if fetchRes.Err != nil {
+							t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
+						}
+
+						// Verify ascending order
+						if len(fetchRes.Docs) != 4 {
+							t.Fatalf("❌ expected 4 docs, got %d", len(fetchRes.Docs))
+						}
+
+						for i, doc := range fetchRes.Docs {
+							expectedSort := i + 1
+							if fmt.Sprintf("%v", doc[TestSortAscField]) != fmt.Sprintf("%d", expectedSort) {
+								t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
+							}
+						}
+					})
+				}
+
+				// Test Export (basic tests)
+				t.Run("Test_Export", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data
+					data := datasources.DatasourcePushRequest{
+						Inserts: []map[string]any{
+							{TestIDField: "1", TestAField: "Alice", TestBField: "30"},
+							{TestIDField: "2", TestAField: "Bob", TestBField: "25"},
+							{TestIDField: "3", TestAField: "Charlie", TestBField: "35"},
+						},
+					}
+					_, err := td.source.Push(&ctx, &data)
+					if err != nil {
+						t.Fatalf("⛔️ Push error: %s", err)
+					}
+
+					// Verify count
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
+						t.Errorf("❌ expected count=3 after push, got %d", got)
+					}
+
+					// Create temp CSV file path
+					dir := t.TempDir()
+					csvPath := filepath.Join(dir, "export.csv")
+
+					// Call SaveCSV
+					err = datasources.SaveCSV(&ctx, td.source, csvPath, 2)
+					if err != nil {
+						t.Fatalf("⛔️ SaveCSV failed: %v", err)
+					}
+
+					// Read and verify the file content
+					content, err := os.ReadFile(csvPath)
+					if err != nil {
+						t.Fatalf("⛔️ failed to read output file: %v", err)
+					}
+
+					gotContent := string(content)
+
+					// For basic CSV structure validation, we'll check:
+					// 1. The file has content
+					if len(gotContent) == 0 {
+						t.Errorf("❌ got empty file, expected content")
+					}
+					// 2. It has the right number of lines (header + data)
+					gotLines := strings.Split(strings.TrimSuffix(gotContent, "\n"), "\n")
+					if len(gotLines) != 4 { // 1 header + 3 data rows
+						t.Errorf("❌ expected 4 lines (1 header + 3 data), got %d lines", len(gotLines))
+					}
+					// 3. Headers are present and correct
+					expectedHeaders := []string{TestAField, TestBField, TestIDField} // Sorted order
+					gotHeaders := strings.Split(gotLines[0], ",")
+					if len(gotHeaders) < len(expectedHeaders) { // Can be more if datasource adds extra fields
+						t.Errorf("❌ expected %d headers, got %d headers", len(expectedHeaders), len(gotHeaders))
+					}
+				})
+			}
+
+			// --------------------------------------------------------------------------
+			// Test Writes (Push, Import, Clear) if supported
+			// --------------------------------------------------------------------------
+			if actions.Write {
+				t.Run("Test_Push", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					tests := []struct {
+						name   string
+						req    *datasources.DatasourcePushRequest
+						expect struct {
+							inserts uint64
+							updates uint64
+							deletes uint64
+							err     bool
+						}
+					}{
+						{
+							name: "Basic_Insert",
+							req: &datasources.DatasourcePushRequest{
 								Inserts: []map[string]any{
 									{TestIDField: "a", TestAField: "foo"},
-									{TestIDField: "b", TestAField: "bar"},
+									{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 								},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{inserts: 2},
+						},
+						{
+							name: "Invalid_Inserts",
+							req: &datasources.DatasourcePushRequest{
+								Inserts: []map[string]any{
+									nil,
+									{},
+									{TestAField: "no-id"},
+								},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{err: true},
+						},
+						{
+							name: "Basic_Update",
+							req: &datasources.DatasourcePushRequest{
+								Updates: []map[string]any{
+									{TestIDField: "a", TestAField: "updated"},
+								},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{updates: 1},
+						},
+						{
+							name: "Invalid_Updates",
+							req: &datasources.DatasourcePushRequest{
+								Updates: []map[string]any{
+									nil,
+									{},
+									{TestAField: "no-id"},
+									{TestIDField: "a", TestAField: "updated-v2"},
+								},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{err: true, updates: 1},
+						},
+						{
+							name: "Basic_Delete",
+							req: &datasources.DatasourcePushRequest{
+								Deletes: []string{"a"},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{deletes: 1},
+						},
+						{
+							name: "Invalid_Deletes",
+							req: &datasources.DatasourcePushRequest{
+								Deletes: []string{"non-existent"},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{deletes: 1}, // Most implementations count attempted deletes
+						},
+						{
+							name: "Mixed_Operations",
+							req: &datasources.DatasourcePushRequest{
+								Inserts: []map[string]any{{TestIDField: "c", TestAField: "new"}},
+								Updates: []map[string]any{{TestIDField: "b", TestAField: "changed"}},
+								Deletes: []string{"a"},
+							},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{inserts: 1, updates: 1, deletes: 1},
+						},
+						{
+							name: "Empty_Request",
+							req:  &datasources.DatasourcePushRequest{},
+							expect: struct {
+								inserts uint64
+								updates uint64
+								deletes uint64
+								err     bool
+							}{},
+						},
+					}
+
+					for _, tt := range tests {
+						t.Run(tt.name, func(t *testing.T) {
+							td.source.Clear(&ctx)
+
+							// Setup initial data if needed
+							if tt.name != "Basic_Insert" {
+								setup := &datasources.DatasourcePushRequest{
+									Inserts: []map[string]any{
+										{TestIDField: "a", TestAField: "foo"},
+										{TestIDField: "b", TestAField: "bar"},
+									},
+								}
+								_, err := td.source.Push(&ctx, setup)
+								if err != nil {
+									t.Fatalf("⛔️ Setup error: %s", err)
+								}
 							}
-							_, err := td.source.Push(&ctx, setup)
-							if err != nil {
-								t.Fatalf("⛔️ Setup error: %s", err)
+
+							// Run test
+							c, err := td.source.Push(&ctx, tt.req)
+							if err != nil && !tt.expect.err {
+								t.Fatalf("⛔️ Unexpected push error: %s", err)
 							}
-						}
+							if err == nil && tt.expect.err {
+								t.Error("❌ Expected error but got none")
+							}
+							if c.Inserts != tt.expect.inserts || c.Updates != tt.expect.updates || c.Deletes != tt.expect.deletes {
+								t.Errorf("❌ expected inserts=%d, updates=%d, deletes=%d; got inserts=%d, updates=%d, deletes=%d",
+									tt.expect.inserts, tt.expect.updates, tt.expect.deletes,
+									c.Inserts, c.Updates, c.Deletes)
+							}
+						})
+					}
+				})
 
-						// Run test
-						c, err := td.source.Push(&ctx, tt.req)
-						if err != nil && !tt.expect.err {
-							t.Fatalf("⛔️ Unexpected push error: %s", err)
-						}
-						if err == nil && tt.expect.err {
-							t.Error("❌ Expected error but got none")
-						}
-						if c.Inserts != tt.expect.inserts || c.Updates != tt.expect.updates || c.Deletes != tt.expect.deletes {
-							t.Errorf("❌ expected inserts=%d, updates=%d, deletes=%d; got inserts=%d, updates=%d, deletes=%d",
-								tt.expect.inserts, tt.expect.updates, tt.expect.deletes,
-								c.Inserts, c.Updates, c.Deletes)
-						}
-					})
-				}
-			})
-
-			t.Run("Test_Count", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Insert test data
-				data := datasources.DatasourcePushRequest{
-					Inserts: []map[string]any{
-						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
-						{TestIDField: "c", TestAField: "baz", TestBField: "456"},
-						{TestIDField: "d", TestAField: "qux", TestBField: "789"},
-						{TestIDField: "e", TestAField: "quux", TestBField: "1011"},
-					},
-				}
-				_, err := td.source.Push(&ctx, &data)
-				if err != nil {
-					t.Fatalf("⛔️ Push error: %s", err)
-				}
-
-				total := uint64(len(data.Inserts))
-
-				tests := []struct {
-					name   string
-					req    *datasources.DatasourceFetchRequest
-					expect uint64
-				}{
-					{
-						name:   "Count_All",
-						req:    &datasources.DatasourceFetchRequest{},
-						expect: total,
-					},
-					{
-						name:   "Count_SingleID",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a"}},
-						expect: 1,
-					},
-					{
-						name:   "Count_MultipleIDs",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}},
-						expect: 3,
-					},
-					{
-						name:   "Count_NonExistingID",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"z"}},
-						expect: 0,
-					},
-					{
-						name:   "Count_SizeLessThanTotal",
-						req:    &datasources.DatasourceFetchRequest{Size: 2},
-						expect: 2,
-					},
-					{
-						name:   "Count_SizeGreaterThanTotal",
-						req:    &datasources.DatasourceFetchRequest{Size: total + 5},
-						expect: total,
-					},
-					{
-						name:   "Count_OffsetWithinRange",
-						req:    &datasources.DatasourceFetchRequest{Offset: 2},
-						expect: total - 2,
-					},
-					{
-						name:   "Count_OffsetEqualsTotal",
-						req:    &datasources.DatasourceFetchRequest{Offset: total},
-						expect: 0,
-					},
-					{
-						name:   "Count_OffsetGreaterThanTotal",
-						req:    &datasources.DatasourceFetchRequest{Offset: total + 1},
-						expect: 0,
-					},
-					{
-						name:   "Count_SizeAndOffsetWithinRange",
-						req:    &datasources.DatasourceFetchRequest{Size: 2, Offset: 1},
-						expect: 2,
-					},
-					{
-						name:   "Count_SizeAndOffsetExceedingTotal",
-						req:    &datasources.DatasourceFetchRequest{Size: 10, Offset: total - 1},
-						expect: 1,
-					},
-					{
-						name:   "Count_SizeZeroOffsetZero",
-						req:    &datasources.DatasourceFetchRequest{Size: 0, Offset: 0},
-						expect: total,
-					},
-					{
-						name:   "Count_SizeZeroOffsetNonZero",
-						req:    &datasources.DatasourceFetchRequest{Size: 0, Offset: 2},
-						expect: total - 2,
-					},
-					{
-						name:   "Count_IDsWithOffset",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Offset: 1},
-						expect: 2,
-					},
-					{
-						name:   "Count_IDsWithSize",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 2},
-						expect: 2,
-					},
-					{
-						name:   "Count_IDsWithSizeAndOffset",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 1, Offset: 2},
-						expect: 1,
-					},
-					{
-						name:   "Count_IDsWithSizeAndOffsetExceeding",
-						req:    &datasources.DatasourceFetchRequest{IDs: []string{"a", "b", "c"}, Size: 5, Offset: 2},
-						expect: 1,
-					},
-				}
-
-				for _, tc := range tests {
-					t.Run(tc.name, func(t *testing.T) {
-						got := td.source.Count(&ctx, tc.req)
-						if got != tc.expect {
-							t.Errorf("❌ %s: expected %d, got %d (req: %+v)", tc.name, tc.expect, got, tc.req)
-						}
-					})
-				}
-			})
-
-			// Test Clear
-			t.Run("Test_Clear", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Insert test data
-				data := datasources.DatasourcePushRequest{
-					Inserts: []map[string]any{
-						{TestIDField: "a", TestAField: "foo"},
-						{TestIDField: "b", TestAField: "bar", TestBField: "123"},
-					},
-				}
-				_, err := td.source.Push(&ctx, &data)
-				if err != nil {
-					t.Fatalf("⛔️ Push error: %s", err)
-				}
-				<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit to ensure changes were made
-
-				// Clear
-				td.source.Clear(&ctx)
-				// Verify empty
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 0 {
-					t.Errorf("❌ expected empty count=0 after clear, got %d", got)
-				}
-			})
-
-			// Test filtering if available
-			if td.withFilter {
-				t.Run("Test_Fetch_Filter", func(t *testing.T) {
+				// Test Import (basic tests)
+				t.Run("Test_Import", func(t *testing.T) {
 					td.source.Clear(&ctx)
 
-					// Insert test data with and without deletedAt field
+					// Create temp CSV file
+					dir := t.TempDir()
+					csvPath := filepath.Join(dir, "test.csv")
+					csvContent := "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n"
+					err := os.WriteFile(csvPath, []byte(csvContent), 0644)
+					if err != nil {
+						t.Fatalf("⛔️ failed to create temp CSV file: %v", err)
+					}
+
+					// Import CSV
+					err = td.source.Import(&ctx, datasources.DatasourceImportRequest{
+						Type:      datasources.DatasourceImportTypeCSV,
+						Source:    datasources.DatasourceImportSourceFile,
+						Location:  csvPath,
+						BatchSize: 2,
+					})
+					if err != nil {
+						t.Fatalf("⛔️ Import error: %v", err)
+					}
+
+					// Verify count
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
+						t.Errorf("❌ expected count=3 after import, got %d", got)
+					}
+				})
+
+				// Test Clear
+				t.Run("Test_Clear", func(t *testing.T) {
+					td.source.Clear(&ctx)
+
+					// Insert test data
 					data := datasources.DatasourcePushRequest{
 						Inserts: []map[string]any{
-							{TestIDField: "a", TestAField: "foo", TestFilterOutField: true},
-							{TestIDField: "b", TestAField: "bar"},
+							{TestIDField: "a", TestAField: "foo"},
+							{TestIDField: "b", TestAField: "bar", TestBField: "123"},
 						},
 					}
 					_, err := td.source.Push(&ctx, &data)
 					if err != nil {
 						t.Fatalf("⛔️ Push error: %s", err)
 					}
+					<-time.After(time.Duration(100 * time.Millisecond)) // Wait a bit to ensure changes were made
 
-					// Fetch should return only non-deleted records due to filter
-					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
-					if fetchRes.Err != nil {
-						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
-					}
-					if len(fetchRes.Docs) != 1 || fetchRes.Docs[0][TestIDField] != "b" {
-						t.Errorf("❌ expected single non-deleted doc with id 'b', got %#v", fetchRes.Docs)
-					}
-				})
-			}
-
-			// Test sorting if available
-			if td.withSort {
-				t.Run("Test_Fetch_Sort", func(t *testing.T) {
+					// Clear
 					td.source.Clear(&ctx)
-
-					// Insert test data with sort field in descending order
-					data := datasources.DatasourcePushRequest{
-						Inserts: []map[string]any{
-							{TestIDField: "a", TestAField: "foo", TestSortAscField: 4},
-							{TestIDField: "d", TestAField: "qux", TestSortAscField: 1},
-							{TestIDField: "b", TestAField: "bar", TestSortAscField: 3},
-							{TestIDField: "c", TestAField: "baz", TestSortAscField: 2},
-						},
-					}
-					_, err := td.source.Push(&ctx, &data)
-					if err != nil {
-						t.Fatalf("⛔️ Push error: %s", err)
-					}
-
-					// Fetch should return records sorted by TestSortAscField in ascending order
-					fetchRes := td.source.Fetch(&ctx, &datasources.DatasourceFetchRequest{})
-					if fetchRes.Err != nil {
-						t.Fatalf("⛔️ Fetch error: %v", fetchRes.Err)
-					}
-
-					// Verify ascending order
-					if len(fetchRes.Docs) != 4 {
-						t.Fatalf("❌ expected 4 docs, got %d", len(fetchRes.Docs))
-					}
-
-					for i, doc := range fetchRes.Docs {
-						expectedSort := i + 1
-						if fmt.Sprintf("%v", doc[TestSortAscField]) != fmt.Sprintf("%d", expectedSort) {
-							t.Errorf("❌ expected sort value %d at position %d, got %v", expectedSort, i, doc[TestSortAscField])
-						}
+					// Verify empty
+					if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 0 {
+						t.Errorf("❌ expected empty count=0 after clear, got %d", got)
 					}
 				})
 			}
-
-			// Test Import (basic tests)
-			t.Run("Test_Import", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Create temp CSV file
-				dir := t.TempDir()
-				csvPath := filepath.Join(dir, "test.csv")
-				csvContent := "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35\n"
-				err := os.WriteFile(csvPath, []byte(csvContent), 0644)
-				if err != nil {
-					t.Fatalf("⛔️ failed to create temp CSV file: %v", err)
-				}
-
-				// Import CSV
-				err = td.source.Import(&ctx, datasources.DatasourceImportRequest{
-					Type:      datasources.DatasourceImportTypeCSV,
-					Source:    datasources.DatasourceImportSourceFile,
-					Location:  csvPath,
-					BatchSize: 2,
-				})
-				if err != nil {
-					t.Fatalf("⛔️ Import error: %v", err)
-				}
-
-				// Verify count
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
-					t.Errorf("❌ expected count=3 after import, got %d", got)
-				}
-			})
-
-			// Test Export (basic tests)
-			t.Run("Test_Export", func(t *testing.T) {
-				td.source.Clear(&ctx)
-
-				// Insert test data
-				data := datasources.DatasourcePushRequest{
-					Inserts: []map[string]any{
-						{TestIDField: "1", TestAField: "Alice", TestBField: "30"},
-						{TestIDField: "2", TestAField: "Bob", TestBField: "25"},
-						{TestIDField: "3", TestAField: "Charlie", TestBField: "35"},
-					},
-				}
-				_, err := td.source.Push(&ctx, &data)
-				if err != nil {
-					t.Fatalf("⛔️ Push error: %s", err)
-				}
-
-				// Verify count
-				if got := td.source.Count(&ctx, &datasources.DatasourceFetchRequest{}); got != 3 {
-					t.Errorf("❌ expected count=3 after push, got %d", got)
-				}
-
-				// Create temp CSV file path
-				dir := t.TempDir()
-				csvPath := filepath.Join(dir, "export.csv")
-
-				// Call SaveCSV
-				err = datasources.SaveCSV(&ctx, td.source, csvPath, 2)
-				if err != nil {
-					t.Fatalf("⛔️ SaveCSV failed: %v", err)
-				}
-
-				// Read and verify the file content
-				content, err := os.ReadFile(csvPath)
-				if err != nil {
-					t.Fatalf("⛔️ failed to read output file: %v", err)
-				}
-
-				gotContent := string(content)
-
-				// For basic CSV structure validation, we'll check:
-				// 1. The file has content
-				if len(gotContent) == 0 {
-					t.Errorf("❌ got empty file, expected content")
-				}
-				// 2. It has the right number of lines (header + data)
-				gotLines := strings.Split(strings.TrimSuffix(gotContent, "\n"), "\n")
-				if len(gotLines) != 4 { // 1 header + 3 data rows
-					t.Errorf("❌ expected 4 lines (1 header + 3 data), got %d lines", len(gotLines))
-				}
-				// 3. Headers are present and correct
-				expectedHeaders := []string{TestAField, TestBField, TestIDField} // Sorted order
-				gotHeaders := strings.Split(gotLines[0], ",")
-				if len(gotHeaders) < len(expectedHeaders) { // Can be more if datasource adds extra fields
-					t.Errorf("❌ expected %d headers, got %d headers", len(expectedHeaders), len(gotHeaders))
-				}
-			})
 
 			fmt.Print("\n---------------------------------------------------------------------------------\n\n")
 		})

@@ -429,6 +429,18 @@ func (ds *RedisDatasource) Client() *redis.Client {
 	return ds.client
 }
 
+// -------------------------
+// Datasource interface
+// -------------------------
+
+func (ds *RedisDatasource) Actions() *DatasourceActionResult {
+	return &DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: true,
+	}
+}
+
 // Get total count
 func (ds *RedisDatasource) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 

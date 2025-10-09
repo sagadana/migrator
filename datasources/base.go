@@ -23,6 +23,12 @@ var (
 
 const DefaultWatcherBufferSize = 1024
 
+type DatasourceActionResult struct {
+	Read   bool
+	Write  bool
+	Stream bool
+}
+
 // ----------------------------
 // Types: Push, Fetch, Stream
 // ----------------------------
@@ -118,6 +124,9 @@ type DatasourceExportRequest struct {
 type DatasourceTransformer func(data map[string]any) (map[string]any, error)
 
 type Datasource interface {
+	// Allowed actions
+	Actions() *DatasourceActionResult
+
 	// Get total count of items based on the provided request.
 	// Note: The count should reflect the given 'Size' and number of 'IDs'
 	Count(ctx *context.Context, request *DatasourceFetchRequest) uint64
