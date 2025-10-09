@@ -53,6 +53,14 @@ func (m *MemoryDatasource) getID(data map[string]any) (val string, err error) {
 	return val, fmt.Errorf("missing '%s' in insert document", m.idField)
 }
 
+func (m *MemoryDatasource) Actions() *DatasourceActionResult {
+	return &DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: true,
+	}
+}
+
 func (m *MemoryDatasource) Count(_ *context.Context, request *DatasourceFetchRequest) uint64 {
 	if m.isClosed {
 		panic(ErrDatastoreClosed)

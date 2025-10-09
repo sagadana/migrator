@@ -284,6 +284,14 @@ func (ds *MySQLDatasource[T]) DB() *gorm.DB {
 // Datasource interface
 // -------------------------
 
+func (ds *MySQLDatasource[T]) Actions() *DatasourceActionResult {
+	return &DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: true,
+	}
+}
+
 // Get total count
 func (ds *MySQLDatasource[T]) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 	query := ds.db.Table(ds.tableName)

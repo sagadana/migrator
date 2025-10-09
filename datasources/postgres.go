@@ -286,6 +286,14 @@ func (ds *PostgresDatasource[T]) DB() *gorm.DB {
 // Datasource interface
 // -------------------------
 
+func (ds *PostgresDatasource[T]) Actions() *DatasourceActionResult {
+	return &DatasourceActionResult{
+		Read:   true,
+		Write:  true,
+		Stream: true,
+	}
+}
+
 // Get total count
 func (ds *PostgresDatasource[T]) Count(ctx *context.Context, request *DatasourceFetchRequest) uint64 {
 	query := ds.db.Table(ds.tableName)
