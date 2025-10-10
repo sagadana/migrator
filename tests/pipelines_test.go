@@ -377,6 +377,16 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 				os.Getenv("MYSQL_DB"),
 			)
 		}
+		mariaDBDSN := os.Getenv("MARIADB_DSN")
+		if mariaDBDSN == "" {
+			mariaDBDSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+				os.Getenv("MYSQL_USER"),
+				os.Getenv("MYSQL_PASS"),
+				os.Getenv("MARIADB_HOST"),
+				os.Getenv("MARIADB_PORT"),
+				os.Getenv("MYSQL_DB"),
+			)
+		}
 
 		// Define test model for MySQL
 		type TestMySQLModel struct {
@@ -460,6 +470,49 @@ func getTestPipelines(ctx *context.Context, instanceId string) <-chan TestPipeli
 				TableName:          getDsName(id, "source"),
 				Model:              &TestMySQLModel{},
 				IDField:            IDField,
+				Filter:             datasources.MySQLDatasourceFilter{},
+				WithTransformer:    mysqlTransformer,
+				DisableReplication: false,
+			},
+		)
+		toDs = datasources.NewMemoryDatasource(getDsName(id, "destination"), IDField)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// --------------- 5.3. Memory to MaraiDB --------------- //
+		id = "test-mem-to-mariadb-pipeline"
+		fromDs = datasources.NewMemoryDatasource(getDsName(id, "source"), IDField)
+		toDs = datasources.NewMySQLDatasource(
+			ctx,
+			datasources.MySQLDatasourceConfigs[TestMySQLModel]{
+				DSN:                mariaDBDSN,
+				TableName:          getDsName(id, "destination"),
+				Model:              &TestMySQLModel{},
+				IDField:            IDField,
+				DBFlavor:           datasources.MySQLFlavorMariaDB,
+				WithTransformer:    mysqlTransformer,
+				DisableReplication: true,
+			},
+		)
+		out <- TestPipeline{
+			id:          id,
+			source:      fromDs,
+			destination: toDs,
+		}
+
+		// --------------- 5.4. MaraiDB to Memory --------------- //
+		id = "test-mariadb-to-mem-pipeline"
+		fromDs = datasources.NewMySQLDatasource(
+			ctx,
+			datasources.MySQLDatasourceConfigs[TestMySQLModel]{
+				DSN:                mariaDBDSN,
+				TableName:          getDsName(id, "source"),
+				Model:              &TestMySQLModel{},
+				IDField:            IDField,
+				DBFlavor:           datasources.MySQLFlavorMariaDB,
 				Filter:             datasources.MySQLDatasourceFilter{},
 				WithTransformer:    mysqlTransformer,
 				DisableReplication: false,

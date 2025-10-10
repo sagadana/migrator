@@ -24,6 +24,13 @@ import (
 
 const MySQLDefaultIDField = "id"
 
+type MySQLFlavor string
+
+const (
+	MySQLFlavorDefault MySQLFlavor = "mysql"
+	MySQLFlavorMariaDB MySQLFlavor = "mariadb"
+)
+
 // generateUniqueServerID creates a unique server ID based on table name
 // MySQL server IDs should be between 1 and 4294967295 (2^32-1)
 func generateUniqueServerID(tableName string) uint32 {
@@ -60,7 +67,7 @@ type MySQLDatasourceConfigs[T any] struct {
 	// This would very likely correspond to the primary key field in the table
 	IDField string
 	// Database flavor: "mysql" (default) or "mariadb"
-	DBFlavor string
+	DBFlavor MySQLFlavor
 
 	// Filter conditions (WHERE clause)
 	Filter MySQLDatasourceFilter
@@ -200,12 +207,13 @@ func NewMySQLDatasource[T any](ctx *context.Context, config MySQLDatasourceConfi
 	}
 
 	// Validate DB flavor
-	flavor := strings.ToLower(config.DBFlavor)
+	flavor := config.DBFlavor
 	if flavor == "" {
-		flavor = "mysql" // Default to mysql
+		flavor = MySQLFlavorDefault
 	}
-	if flavor != "mysql" && flavor != "mariadb" {
-		panic(fmt.Errorf("mysql datasource: invalid DB flavor '%s'. Supported flavors are: 'mysql', 'mariadb'", config.DBFlavor))
+	if flavor != MySQLFlavorDefault && flavor != MySQLFlavorMariaDB {
+		panic(fmt.Errorf("mysql datasource: invalid DB flavor '%s'. Supported flavors are: %s",
+			config.DBFlavor, strings.Join([]string{string(MySQLFlavorDefault), string(MySQLFlavorMariaDB)}, "', '")))
 	}
 
 	// Generate unique server ID based on table name hash to avoid conflicts
@@ -214,7 +222,7 @@ func NewMySQLDatasource[T any](ctx *context.Context, config MySQLDatasourceConfi
 	// Set default model if not provided
 	ds := &MySQLDatasource[T]{
 		db:       db,
-		dbFlavor: flavor,
+		dbFlavor: string(flavor),
 
 		tableName:  config.TableName,
 		idField:    idField,

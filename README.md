@@ -35,6 +35,7 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 | `Redis`    | ✅     | ✅   | ✅    | ✅ (_with keyspace notifications_) |
 | `Postgres` | ✅     | ✅   | ✅    | ✅ (_with logical replication_)    |
 | `MySQL`    | ✅     | ✅   | ✅    | ✅ (_with binlog replication_)     |
+| `MariaDB`  | ✅     | ✅   | ✅    | ✅ (_with binlog replication_)     |
 | `<More>`   | Soon   | TBC  | TBC   | TBC                                |
 
 ## State Stores
