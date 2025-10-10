@@ -14,7 +14,7 @@
 <br/>
 
 <div align="start">
-High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease.
+High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease (Homogeneous or Heterogeneous).
 </div>
 
 ## Features
@@ -28,13 +28,14 @@ High-performant, easy-to-use data replication tool. Replicate data from any sour
 
 ## Datasources
 
-| Datasource | Status | Read | Write | Stream                             |
+| Datasource | Status | Read | Write | Stream (CDC)                       |
 | ---------- | ------ | ---- | ----- | ---------------------------------- |
 | `Memory`   | ✅     | ✅   | ✅    | ✅                                 |
 | `MongoDB`  | ✅     | ✅   | ✅    | ✅ (_with change streams_)         |
 | `Redis`    | ✅     | ✅   | ✅    | ✅ (_with keyspace notifications_) |
 | `Postgres` | ✅     | ✅   | ✅    | ✅ (_with logical replication_)    |
 | `MySQL`    | ✅     | ✅   | ✅    | ✅ (_with binlog replication_)     |
+| `MariaDB`  | ✅     | ✅   | ✅    | ✅ (_with binlog replication_)     |
 | `<More>`   | Soon   | TBC  | TBC   | TBC                                |
 
 ## State Stores

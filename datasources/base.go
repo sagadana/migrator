@@ -132,7 +132,7 @@ type Datasource interface {
 	Count(ctx *context.Context, request *DatasourceFetchRequest) uint64
 	// Fetch data
 	Fetch(ctx *context.Context, request *DatasourceFetchRequest) DatasourceFetchResult
-	// Insert/Update/Delete data
+	// Insert, Update, Delete data (in that order)
 	Push(ctx *context.Context, request *DatasourcePushRequest) (DatasourcePushCount, error)
 	// Listen to Change Data Streams or periodically watch for changes
 	Watch(ctx *context.Context, request *DatasourceStreamRequest) <-chan DatasourceStreamResult

@@ -329,6 +329,16 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 				os.Getenv("MYSQL_DB"),
 			)
 		}
+		mariaDBDSN := os.Getenv("MARIADB_DSN")
+		if mariaDBDSN == "" {
+			mariaDBDSN = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+				os.Getenv("MYSQL_USER"),
+				os.Getenv("MYSQL_PASS"),
+				os.Getenv("MARIADB_HOST"),
+				os.Getenv("MARIADB_PORT"),
+				os.Getenv("MYSQL_DB"),
+			)
+		}
 
 		// ---------------------- Simple Model  -----------------------
 
@@ -352,6 +362,30 @@ func getTestDatasources(ctx *context.Context, instanceId string) <-chan TestData
 					TableName: getDsName(id),
 					Model:     &TestSimpleMySQLModel{},
 					IDField:   TestIDField,
+
+					OnInit: func(db *gorm.DB) error {
+						return nil
+					},
+
+					DisableReplication: false,
+				},
+			),
+		}
+
+		id = "mariadb-simple-datasource"
+		out <- TestDatasource{
+			id:              id,
+			withFilter:      false,
+			withWatchFilter: false,
+			withSort:        false,
+			source: datasources.NewMySQLDatasource(
+				ctx,
+				datasources.MySQLDatasourceConfigs[TestSimpleMySQLModel]{
+					DSN:       mariaDBDSN,
+					TableName: getDsName(id),
+					Model:     &TestSimpleMySQLModel{},
+					IDField:   TestIDField,
+					DBFlavor:  datasources.MySQLFlavorMariaDB,
 
 					OnInit: func(db *gorm.DB) error {
 						return nil
