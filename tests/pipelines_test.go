@@ -1043,6 +1043,28 @@ func TestPipelineImplementations(t *testing.T) {
 
 					})
 
+					t.Run("Migration_From_Offset", func(t *testing.T) {
+						ctx, cancel := context.WithTimeout(testCtx, time.Duration(60)*time.Second)
+						defer cancel()
+
+						// Clear first
+						pipeline.To.Clear(&ctx)
+						pipeline.Store.Clear(&ctx)
+
+						// Start from offset
+						startOffset := uint64(10)
+						maxSize := uint64(20)
+						testMigration(
+							t, &ctx, &pipeline, &pipelines.PipelineConfig{
+								MigrationParallelWorkers: 4,
+								MigrationBatchSize:       5,
+								MigrationMaxSize:         maxSize,
+								MigrationStartOffset:     startOffset,
+							},
+							maxSize,
+						)
+					})
+
 					// --------------------------------------------------------------------
 					// 2. Migration (with continuous replication enabled)
 					// --------------------------------------------------------------------

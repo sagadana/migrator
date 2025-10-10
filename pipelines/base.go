@@ -387,6 +387,8 @@ func (p *Pipeline) Start(ctx *context.Context, config *PipelineConfig, withRepli
 		if ok && state.MigrationStatus == states.MigrationStatusStarting || state.MigrationStatus == states.MigrationStatusInProgress {
 			return ErrPipelineMigrating
 		}
+	} else {
+		startOffet = config.MigrationStartOffset
 	}
 
 	// Get total items (before saving state)
