@@ -1,4 +1,4 @@
-package tests
+package helpers
 
 import (
 	"context"
@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/sagadana/migrator/helpers"
 )
 
 // -------------------
@@ -38,12 +36,12 @@ func TestParallelBatch(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		config   helpers.ParallelBatchConfig
+		config   ParallelBatchConfig
 		expected []jobCall
 	}{
 		{
 			name: "Basic single worker, partial last batch",
-			config: helpers.ParallelBatchConfig{
+			config: ParallelBatchConfig{
 				Units:       1,
 				Total:       5,
 				BatchSize:   2,
@@ -57,7 +55,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "BatchSize > Total (one big batch)",
-			config: helpers.ParallelBatchConfig{
+			config: ParallelBatchConfig{
 				Units:       3,
 				Total:       4,
 				BatchSize:   10,
@@ -69,7 +67,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Zero BatchSize fallback to 1",
-			config: helpers.ParallelBatchConfig{
+			config: ParallelBatchConfig{
 				Units:       2,
 				Total:       3,
 				BatchSize:   0,
@@ -83,7 +81,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Zero Units fallback to 1",
-			config: helpers.ParallelBatchConfig{
+			config: ParallelBatchConfig{
 				Units:       0,
 				Total:       3,
 				BatchSize:   2,
@@ -96,7 +94,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name: "Multiple workers, even split with remainder",
-			config: helpers.ParallelBatchConfig{
+			config: ParallelBatchConfig{
 				Units:       3,
 				Total:       7,
 				BatchSize:   2,
@@ -111,7 +109,7 @@ func TestParallelBatch(t *testing.T) {
 		},
 		{
 			name:   "Total zero yields no jobs",
-			config: helpers.ParallelBatchConfig{Units: 5, Total: 0, BatchSize: 3},
+			config: ParallelBatchConfig{Units: 5, Total: 0, BatchSize: 3},
 			// expected empty slice
 		},
 	}
@@ -122,7 +120,7 @@ func TestParallelBatch(t *testing.T) {
 			mu := new(sync.Mutex)
 
 			// Wrap the fn to capture calls
-			helpers.ParallelBatch(&ctx, &tt.config, func(c *context.Context, id, size, offset uint64) {
+			ParallelBatch(&ctx, &tt.config, func(c *context.Context, id, size, offset uint64) {
 				mu.Lock()
 				defer mu.Unlock()
 				calls = append(calls, jobCall{
@@ -275,7 +273,7 @@ func TestStreamCSV(t *testing.T) {
 				path = writeTempFile(t, tt.content)
 			}
 
-			ch, err := helpers.StreamReadCSV(path, tt.batchSize)
+			ch, err := StreamReadCSV(path, tt.batchSize)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("⛔️ expected error for path %q, got nil", path)
@@ -312,7 +310,7 @@ func TestExtractNumber(t *testing.T) {
 		{"", 0},
 	}
 	for _, tt := range tests {
-		got := helpers.ExtractNumber(tt.input)
+		got := ExtractNumber(tt.input)
 		if got != tt.want {
 			t.Errorf("❌ ExtractNumber(%q) = %d; want %d", tt.input, got, tt.want)
 		}
@@ -323,7 +321,7 @@ func TestNumberAwareSort(t *testing.T) {
 	t.Parallel()
 
 	data := []string{"file10.txt", "file2.txt", "file1.txt", "file2a.txt", "file2b.txt"}
-	helpers.NumberAwareSort(data)
+	NumberAwareSort(data)
 	want := []string{"file1.txt", "file2.txt", "file2a.txt", "file2b.txt", "file10.txt"}
 	for i := range want {
 		if data[i] != want[i] {
@@ -336,8 +334,8 @@ func TestRandomString(t *testing.T) {
 	t.Parallel()
 
 	length := 16
-	s1 := helpers.RandomString(length)
-	s2 := helpers.RandomString(length)
+	s1 := RandomString(length)
+	s2 := RandomString(length)
 	if len(s1) != length {
 		t.Errorf("❌ RandomString length = %d; want %d", len(s1), length)
 	}
@@ -357,7 +355,7 @@ func TestRandomString(t *testing.T) {
 func TestCreateTextLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := helpers.CreateTextLogger(slog.LevelDebug)
+	logger := CreateTextLogger(slog.LevelDebug)
 	if logger == nil {
 		t.Fatal("CreateTextLogger returned nil")
 	}
@@ -382,7 +380,7 @@ func TestCreateTextLogger(t *testing.T) {
 
 	// Create logger with higher level
 
-	logger = helpers.CreateTextLogger(slog.LevelError)
+	logger = CreateTextLogger(slog.LevelError)
 	if logger.Enabled(ctx, slog.LevelInfo) != false {
 		t.Error("Expected Info level to be disabled")
 	}
@@ -411,7 +409,7 @@ func TestGetTempBasePath(t *testing.T) {
 	os.Unsetenv("RUNNER_TEMP")
 	os.Unsetenv("TEMP_BASE_PATH")
 	want := filepath.Join(os.TempDir(), id)
-	got := helpers.GetTempBasePath(id)
+	got := GetTempBasePath(id)
 	if got != want {
 		t.Errorf("❌ GetTempBasePath fallback = %q; want %q", got, want)
 	}
@@ -419,7 +417,7 @@ func TestGetTempBasePath(t *testing.T) {
 	os.Unsetenv("RUNNER_TEMP")
 	os.Setenv("TEMP_BASE_PATH", "/basepath")
 	want = filepath.Join("/basepath", id)
-	got = helpers.GetTempBasePath(id)
+	got = GetTempBasePath(id)
 	if got != want {
 		t.Errorf("❌ GetTempBasePath TEMP_BASE_PATH = %q; want %q", got, want)
 	}
@@ -427,7 +425,7 @@ func TestGetTempBasePath(t *testing.T) {
 	os.Setenv("RUNNER_TEMP", "/runner")
 	os.Setenv("TEMP_BASE_PATH", "/basepath")
 	want = filepath.Join("/runner", id)
-	got = helpers.GetTempBasePath(id)
+	got = GetTempBasePath(id)
 	if got != want {
 		t.Errorf("❌ GetTempBasePath RUNNER_TEMP = %q; want %q", got, want)
 	}
@@ -564,7 +562,7 @@ func TestFlatten(t *testing.T) {
 			t.Parallel()
 
 			dest := make(map[string]any)
-			helpers.Flatten(tc.prefix, tc.src, dest)
+			Flatten(tc.prefix, tc.src, dest)
 
 			// Compare length first for quick failure
 			if len(dest) != len(tc.expected) {
@@ -693,7 +691,7 @@ func TestSlice(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			gotSlice, gotStart, gotEnd := helpers.Slice(tc.items, tc.offset, tc.limit)
+			gotSlice, gotStart, gotEnd := Slice(tc.items, tc.offset, tc.limit)
 
 			if !reflect.DeepEqual(gotSlice, tc.wantSlice) {
 				t.Errorf("Slice() slice = %v; want %v", gotSlice, tc.wantSlice)
@@ -798,7 +796,7 @@ func TestStreamWriteCSV(t *testing.T) {
 			errCh := make(chan error, 1)
 			go func() {
 				defer close(errCh)
-				errCh <- helpers.StreamWriteCSV(path, tt.headers, input)
+				errCh <- StreamWriteCSV(path, tt.headers, input)
 			}()
 
 			// Send data batches
@@ -841,7 +839,7 @@ func TestStreamWriteCSV_InvalidPath(t *testing.T) {
 	input := make(chan []map[string]any)
 	close(input)
 
-	err := helpers.StreamWriteCSV("/invalid/path/that/does/not/exist.csv", []string{"h1"}, input)
+	err := StreamWriteCSV("/invalid/path/that/does/not/exist.csv", []string{"h1"}, input)
 	if err == nil {
 		t.Fatal("⛔️ expected error for invalid path, got nil")
 	}

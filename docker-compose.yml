@@ -5,11 +5,10 @@ services:
   tester-state:
     build:
       context: .
+    working_dir: /usr/src/app
     volumes:
       - .:/usr/src/app
-    command:
-      go test -v -cover -coverprofile=/usr/src/app/tests/test-states-coverage.out -coverpkg
-      "github.com/sagadana/migrator/states" /usr/src/app/tests/states_test.go
+    command: go test -v -cover -coverpkg "github.com/sagadana/migrator/states" /usr/src/app/states
     networks:
       - dev-network
     env_file:
@@ -21,11 +20,10 @@ services:
   tester-ds:
     build:
       context: .
+    working_dir: /usr/src/app
     volumes:
       - .:/usr/src/app
-    command:
-      go test -v -cover -coverprofile=/usr/src/app/tests/test-datasources-coverage.out -coverpkg
-      "github.com/sagadana/migrator/datasources" /usr/src/app/tests/datasources_test.go
+    command: go test -v -cover -coverpkg "github.com/sagadana/migrator/datasources" /usr/src/app/datasources
     networks:
       - dev-network
     env_file:
@@ -34,6 +32,8 @@ services:
       redis:
         condition: service_healthy
       mongo-a:
+        condition: service_healthy
+      mongo-b:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
@@ -47,19 +47,22 @@ services:
   tester-pipe:
     build:
       context: .
+    working_dir: /usr/src/app
     volumes:
       - .:/usr/src/app
-    command:
-      go test -v -cover -coverprofile=/usr/src/app/tests/test-pipelines-coverage.out -coverpkg
-      "github.com/sagadana/migrator/pipelines" /usr/src/app/tests/pipelines_test.go
+    command: go test -v -cover -coverpkg "github.com/sagadana/migrator/pipelines" /usr/src/app/pipelines
     networks:
       - dev-network
     env_file:
       - ./tests/.env.dev
+    environment:
+      - TEST_DATASET_CSV_PATH=/usr/src/app/tests/datasets/sample-100.csv
     depends_on:
       redis:
         condition: service_healthy
       mongo-a:
+        condition: service_healthy
+      mongo-b:
         condition: service_healthy
       mongo-init:
         condition: service_completed_successfully
@@ -73,11 +76,10 @@ services:
   tester-helper:
     build:
       context: .
+    working_dir: /usr/src/app
     volumes:
       - .:/usr/src/app
-    command:
-      go test -v -cover -coverprofile=/usr/src/app/tests/test-helpers-coverage.out -coverpkg
-      "github.com/sagadana/migrator/helpers" /usr/src/app/tests/helpers_test.go
+    command: go test -v -cover -coverpkg "github.com/sagadana/migrator/helpers" /usr/src/app/helpers
     networks:
       - dev-network
     env_file:
@@ -85,9 +87,9 @@ services:
 
   lint:
     image: golangci/golangci-lint:latest
+    working_dir: /app
     volumes:
       - .:/app
-    working_dir: /app
     command: golangci-lint run
     networks:
       - dev-network
