@@ -1,7 +1,8 @@
 # Contributing to Migrator
 
-Thank you for considering contributing to [Migrator](https://github.com/sagadana/migrator)!
-We welcome all contributions, whether it's bug reports, feature suggestions, or code contributions. Please follow the guidelines below to ensure a smooth collaboration.
+Thank you for considering contributing to [Migrator](https://github.com/sagadana/migrator)! We welcome all
+contributions, whether it's bug reports, feature suggestions, or code contributions. Please follow the guidelines below
+to ensure a smooth collaboration.
 
 ## Getting Started
 
@@ -12,11 +13,10 @@ We welcome all contributions, whether it's bug reports, feature suggestions, or 
    git clone https://github.com/sagadana/migrator.git
    ```
 
-2. **Set Up Your Environment**
-   Ensure you have Go installed (minimum version: 1.23.x). You can download it from <https://go.dev/dl/>.
+2. **Set Up Your Environment** Ensure you have Go installed (minimum version: 1.23.x). You can download it from
+   <https://go.dev/dl/>.
 
-3. **Install Dependencies**
-   Run the following command to install any required dependencies:
+3. **Install Dependencies** Run the following command to install any required dependencies:
 
    ```bash
    go mod tidy
@@ -83,24 +83,67 @@ git checkout -b [feat/fix]/your-feature-name
 
 ### Add Tests
 
-Ensure your changes are covered by tests.
-
-**States:**
-
-- Add new state to `getTestStates` function in [states_test.go](tests/states_test.go)
-- Add new state store to `getTestStores` function in [pipelines_test.go](tests/pipelines_test.go)
+Ensure your changes are covered by tests. Our test suite is structured to have dedicated test files for each component
+(datasource, state, pipeline). Each module (`datasources`, `states`, `pipelines`) contains a `base_test.go` file that
+provides a generic test runner. To add a new test, you typically create a new `_test.go` file and use the provided test
+runner.
 
 **Datasources:**
 
-- Add new datasource to `getTestDatasources` function in [datasources_test.go](tests/datasources_test.go)
+To add a test for a new datasource, follow these steps:
+
+1. Create a new file named `new_datasource_name_test.go` in the `datasources/` directory.
+2. Inside this file, define a new test function (e.g., `TestNewDatasource`).
+3. Instantiate your new datasource implementation.
+4. Create a `TestDatasource` struct, which is defined in `datasources/base_test.go`. This struct wraps your datasource
+   instance and provides metadata about its capabilities (e.g., if it supports sorting or filtering).
+5. Call the `runDatasourceTest` function, passing the test context, testing object (`t`), and the `TestDatasource`
+   struct you created.
+
+Here is an example based on the memory datasource test (`datasources/memory_test.go`):
+
+```go
+package datasources
+
+import (
+ "context"
+ "fmt"
+ "testing"
+
+ "github.com/sagadana/migrator/helpers"
+)
+
+func TestMyNewDatasource(t *testing.T) {
+ t.Parallel()
+
+ id := "mynew-datasource"
+ instanceId := helpers.RandomString(6)
+ ctx := context.Background()
+
+ td := TestDatasource{
+  id:     id,
+  source: NewMyNewDatasource(fmt.Sprintf("%s-%s", id, instanceId), "id_field"),
+  withFilter:      true, // set capabilities
+  withSort:        true,
+ }
+
+ runDatasourceTest(ctx, t, td)
+}
+```
+
+**States:**
+
+To test a new state store, create a `new_state_name_test.go` file in the `states/` directory and use the `runStateTest`
+function from `states/base_test.go`.
 
 **Pipelines:**
 
-- Add new pipeline to `getTestPipelines` function in [pipelines_test.go](tests/pipelines_test.go)
+For new pipelines, create a `new_pipeline_name_test.go` file in the `pipelines/` directory and use the `runPipelineTest`
+function from `pipelines/base_test.go`.
 
 **Helpers:**
 
-- Add new helpers tests to [helpers_test.go](tests/helpers_test.go)
+For helper utilities, add your test cases to `helpers/utils_test.go`.
 
 ### Commit Your Changes
 
