@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -671,6 +672,8 @@ func (ds *PostgresDatasource[T]) Import(ctx *context.Context, request Datasource
 	switch request.Type {
 	case DatasourceImportTypeCSV: // TODO: use postgres native COPY command
 		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceImportTypeParquet:
+		return LoadParquet(ctx, ds, request.Location, request.BatchSize)
 	default:
 		return fmt.Errorf("unsupported import type: %s", request.Type)
 	}
@@ -681,6 +684,12 @@ func (ds *PostgresDatasource[T]) Export(ctx *context.Context, request Datasource
 	switch request.Type {
 	case DatasourceExportTypeCSV: // TODO: use postgres native COPY command
 		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceExportTypeParquet:
+		fields := map[string]reflect.Type{}
+		for _, field := range ds.fieldMap {
+			fields[field.DBName] = field.FieldType
+		}
+		return SaveParquet(ctx, ds, request.Location, request.BatchSize, fields)
 	default:
 		return fmt.Errorf("unsupported export type: %s", request.Type)
 	}

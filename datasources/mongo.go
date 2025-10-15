@@ -527,6 +527,8 @@ func (ds *MongoDatasource) Import(ctx *context.Context, request DatasourceImport
 	switch request.Type {
 	case DatasourceImportTypeCSV:
 		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceImportTypeParquet:
+		return LoadParquet(ctx, ds, request.Location, request.BatchSize)
 	default:
 		return fmt.Errorf("unsupported import type: %s", request.Type)
 	}
@@ -537,6 +539,8 @@ func (ds *MongoDatasource) Export(ctx *context.Context, request DatasourceExport
 	switch request.Type {
 	case DatasourceExportTypeCSV:
 		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceExportTypeParquet:
+		return SaveParquet(ctx, ds, request.Location, request.BatchSize, nil)
 	default:
 		return fmt.Errorf("unsupported export type: %s", request.Type)
 	}

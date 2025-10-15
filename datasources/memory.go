@@ -267,6 +267,8 @@ func (m *MemoryDatasource) Import(ctx *context.Context, request DatasourceImport
 	switch request.Type {
 	case DatasourceImportTypeCSV:
 		return LoadCSV(ctx, m, request.Location, request.BatchSize)
+	case DatasourceImportTypeParquet:
+		return LoadParquet(ctx, m, request.Location, request.BatchSize)
 	default:
 		return fmt.Errorf("unsupported import type: %s", request.Type)
 	}
@@ -279,6 +281,8 @@ func (m *MemoryDatasource) Export(ctx *context.Context, request DatasourceExport
 	switch request.Type {
 	case DatasourceExportTypeCSV:
 		return SaveCSV(ctx, m, request.Location, request.BatchSize)
+	case DatasourceExportTypeParquet:
+		return SaveParquet(ctx, m, request.Location, request.BatchSize, nil)
 	default:
 		return fmt.Errorf("unsupported export type: %s", request.Type)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -650,6 +651,8 @@ func (ds *MySQLDatasource[T]) Import(ctx *context.Context, request DatasourceImp
 	switch request.Type {
 	case DatasourceImportTypeCSV: // TODO: use mysql native LOAD DATA command
 		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceImportTypeParquet:
+		return LoadParquet(ctx, ds, request.Location, request.BatchSize)
 	default:
 		return fmt.Errorf("unsupported import type: %s", request.Type)
 	}
@@ -660,6 +663,12 @@ func (ds *MySQLDatasource[T]) Export(ctx *context.Context, request DatasourceExp
 	switch request.Type {
 	case DatasourceExportTypeCSV: // TODO: use mysql native SELECT INTO OUTFILE command
 		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceExportTypeParquet:
+		fields := map[string]reflect.Type{}
+		for _, field := range ds.fieldMap {
+			fields[field.DBName] = field.FieldType
+		}
+		return SaveParquet(ctx, ds, request.Location, request.BatchSize, fields)
 	default:
 		return fmt.Errorf("unsupported export type: %s", request.Type)
 	}

@@ -3,10 +3,9 @@ package helpers
 import (
 	"context"
 	"crypto/rand"
-	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -131,108 +130,34 @@ func StreamTransform[In, Out any](input <-chan In, fn func(data In) Out) <-chan 
 	return output
 }
 
-// Read streams of a CSV File
-func StreamReadCSV(path string, batchSize uint64) (<-chan []map[string]any, error) {
-	out := make(chan []map[string]any)
-
-	if batchSize <= 0 {
-		batchSize = 1
-	}
-
-	// Open the file
-	file, err := os.Open(path)
+// Marshal GORM Model to map[string]any
+func MarshalModel[T any](model *T) (map[string]any, error) {
+	data, err := json.Marshal(model)
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 
-	go func() {
-		defer close(out)
-		defer file.Close()
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
 
-		// Create a CSV reader
-		reader := csv.NewReader(file)
-
-		// Read the header row
-		headers, err := reader.Read()
-		if err != nil {
-			log.Println("Error reading header:", err)
-			return
-		}
-
-		// Batch
-		records := make([]map[string]any, 0)
-
-		// Stream the CSV content to the output stream
-		for {
-
-			row, err := reader.Read()
-			if err != nil {
-				if err.Error() == "EOF" {
-					break // End of file
-				}
-				log.Println("Error reading record:", err)
-				return
-			}
-
-			// Map the row to a map[string]string using the header
-			record := make(map[string]any)
-			for i, value := range row {
-				record[headers[i]] = value
-			}
-
-			// Add to batch
-			records = append(records, record)
-
-			// Write the records to the output stream
-			if len(records) >= int(batchSize) {
-				out <- records
-				records = make([]map[string]any, 0)
-			}
-		}
-
-		// Write remaining records
-		if len(records) > 0 {
-			out <- records
-		}
-	}()
-
-	return out, nil
+	return result, nil
 }
 
-// Save stream of contents to CSV file
-func StreamWriteCSV(path string, headers []string, input <-chan []map[string]any) error {
-	// Create or truncate the file
-	file, err := os.Create(path)
+// Unmarshal map[string]any to GORM Model
+func UnmarshalModel[T any](data map[string]any) (*T, error) {
+	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Write headers
-	if err := writer.Write(headers); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Write data
-	for records := range input {
-		for _, record := range records {
-			row := make([]string, len(headers))
-			for i, header := range headers {
-				if val, ok := record[header]; ok {
-					row[i] = fmt.Sprint(val)
-				}
-			}
-			if err := writer.Write(row); err != nil {
-				return err
-			}
-		}
-		writer.Flush()
+	var result T
+	if err := json.Unmarshal(jsonData, &result); err != nil {
+		return nil, err
 	}
 
-	return nil
+	return &result, nil
 }
 
 // Custom sorting function
