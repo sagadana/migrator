@@ -943,8 +943,8 @@ func runDatasourceTest(testCtx context.Context, t *testing.T, td TestDatasource)
 				})
 			}
 
-			// Test Export (basic tests)
-			t.Run("Test_Export", func(t *testing.T) {
+			// Test Export CSV (basic tests)
+			t.Run("Test_Export_CSV", func(t *testing.T) {
 				td.source.Clear(&ctx)
 
 				// Insert test data
@@ -1000,9 +1000,70 @@ func runDatasourceTest(testCtx context.Context, t *testing.T, td TestDatasource)
 					t.Errorf("❌ expected %d headers, got %d headers", len(expectedHeaders), len(gotHeaders))
 				}
 			})
-		}
 
-		// --------------------------------------------------------------------------
+			// Test Export Parquet (basic tests)
+			t.Run("Test_Export_Parquet", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Insert test data
+				data := DatasourcePushRequest{
+					Inserts: []map[string]any{
+						{TestIDField: "1", TestAField: "Alice", TestBField: "30"},
+						{TestIDField: "2", TestAField: "Bob", TestBField: "25"},
+						{TestIDField: "3", TestAField: "Charlie", TestBField: "35"},
+					},
+				}
+				_, err := td.source.Push(&ctx, &data)
+				if err != nil {
+					t.Fatalf("⛔️ Push error: %s", err)
+				}
+
+				// Verify count
+				if got := td.source.Count(&ctx, &DatasourceFetchRequest{}); got != 3 {
+					t.Errorf("❌ expected count=3 after push, got %d", got)
+				}
+
+				// Create temp Parquet file path
+				dir := t.TempDir()
+				parquetPath := filepath.Join(dir, "export.parquet")
+
+				// Call SaveParquet
+				err = SaveParquet(&ctx, td.source, parquetPath, 2, nil)
+				if err != nil {
+					t.Fatalf("⛔️ SaveParquet failed: %v", err)
+				}
+
+				// Verify the file was created
+				fileInfo, err := os.Stat(parquetPath)
+				if err != nil {
+					t.Fatalf("⛔️ failed to stat output file: %v", err)
+				}
+				if fileInfo.Size() == 0 {
+					t.Errorf("❌ got empty file, expected content")
+				}
+
+				// Read back and verify using LoadParquet
+				tempDS := NewMemoryDatasource("temp-parquet-test", TestIDField)
+				err = LoadParquet(&ctx, tempDS, parquetPath, 10)
+				if err != nil {
+					t.Fatalf("⛔️ LoadParquet failed: %v", err)
+				}
+
+				// Verify count matches
+				if got := tempDS.Count(&ctx, &DatasourceFetchRequest{}); got != 3 {
+					t.Errorf("❌ expected count=3 after loading parquet, got %d", got)
+				}
+
+				// Verify data integrity
+				fetchRes := tempDS.Fetch(&ctx, &DatasourceFetchRequest{})
+				if len(fetchRes.Docs) != 3 {
+					t.Errorf("❌ expected 3 docs, got %d", len(fetchRes.Docs))
+				}
+
+				// Clean up temp datasource
+				tempDS.Close(&ctx)
+			})
+		} // --------------------------------------------------------------------------
 		// Test Writes (Push, Import, Clear) if supported
 		// --------------------------------------------------------------------------
 		if actions.Write {
@@ -1166,8 +1227,8 @@ func runDatasourceTest(testCtx context.Context, t *testing.T, td TestDatasource)
 				}
 			})
 
-			// Test Import (basic tests)
-			t.Run("Test_Import", func(t *testing.T) {
+			// Test Import CSV (basic tests)
+			t.Run("Test_Import_CSV", func(t *testing.T) {
 				td.source.Clear(&ctx)
 
 				// Create temp CSV file
@@ -1193,6 +1254,58 @@ func runDatasourceTest(testCtx context.Context, t *testing.T, td TestDatasource)
 				// Verify count
 				if got := td.source.Count(&ctx, &DatasourceFetchRequest{}); got != 3 {
 					t.Errorf("❌ expected count=3 after import, got %d", got)
+				}
+			})
+
+			// Test Import Parquet (basic tests)
+			t.Run("Test_Import_Parquet", func(t *testing.T) {
+				td.source.Clear(&ctx)
+
+				// Create temp Parquet file with test data
+				dir := t.TempDir()
+				parquetPath := filepath.Join(dir, "test.parquet")
+
+				// Create a temporary datasource with test data to export
+				tempDS := NewMemoryDatasource("temp-parquet-source", TestIDField)
+				testData := DatasourcePushRequest{
+					Inserts: []map[string]any{
+						{TestIDField: "1", TestAField: "Alice", TestBField: "30"},
+						{TestIDField: "2", TestAField: "Bob", TestBField: "25"},
+						{TestIDField: "3", TestAField: "Charlie", TestBField: "35"},
+					},
+				}
+				_, err := tempDS.Push(&ctx, &testData)
+				if err != nil {
+					t.Fatalf("⛔️ failed to push to temp datasource: %v", err)
+				}
+
+				// Save to Parquet file
+				err = SaveParquet(&ctx, tempDS, parquetPath, 10, nil)
+				if err != nil {
+					t.Fatalf("⛔️ failed to create temp Parquet file: %v", err)
+				}
+				tempDS.Close(&ctx)
+
+				// Import Parquet
+				err = td.source.Import(&ctx, DatasourceImportRequest{
+					Type:      DatasourceImportTypeParquet,
+					Source:    DatasourceImportSourceFile,
+					Location:  parquetPath,
+					BatchSize: 2,
+				})
+				if err != nil {
+					t.Fatalf("⛔️ Import error: %v", err)
+				}
+
+				// Verify count
+				if got := td.source.Count(&ctx, &DatasourceFetchRequest{}); got != 3 {
+					t.Errorf("❌ expected count=3 after import, got %d", got)
+				}
+
+				// Verify data integrity
+				fetchRes := td.source.Fetch(&ctx, &DatasourceFetchRequest{})
+				if len(fetchRes.Docs) != 3 {
+					t.Errorf("❌ expected 3 docs after import, got %d", len(fetchRes.Docs))
 				}
 			})
 
@@ -2053,6 +2166,445 @@ func TestLoadCSV_ErrorCases(t *testing.T) {
 		if err != nil {
 			// Error is expected for malformed CSV
 			t.Logf("Expected error for malformed CSV: %v", err)
+		}
+	})
+}
+
+func TestSaveParquet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		data      []map[string]any
+		batchSize uint64
+	}{
+		{
+			name: "basic export with batch size 2",
+			data: []map[string]any{
+				{"id": "1", "name": "Alice", "age": 30},
+				{"id": "2", "name": "Bob", "age": 25},
+				{"id": "3", "name": "Charlie", "age": 35},
+			},
+			batchSize: 2,
+		},
+		{
+			name: "export with batch size 1",
+			data: []map[string]any{
+				{"id": "1", "x": "a", "y": 1},
+				{"id": "2", "x": "b", "y": 2},
+			},
+			batchSize: 1,
+		},
+		{
+			name: "batch size larger than data",
+			data: []map[string]any{
+				{"id": "1", "col1": "val1", "col2": "val2"},
+			},
+			batchSize: 10,
+		},
+		{
+			name:      "empty datasource",
+			data:      []map[string]any{},
+			batchSize: 5,
+		},
+		{
+			name: "zero batch size defaults to 1",
+			data: []map[string]any{
+				{"id": "1", "key": "value1"},
+				{"id": "2", "key": "value2"},
+			},
+			batchSize: 0,
+		},
+		{
+			name: "mixed data types",
+			data: []map[string]any{
+				{"id": 1, "active": true, "score": 95.5, "name": "test"},
+				{"id": 2, "active": false, "score": 88.0, "name": "demo"},
+			},
+			batchSize: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create memory datasource and populate with test data
+			ds := NewMemoryDatasource("test-save-parquet", "id")
+			defer ds.Close(&ctx)
+
+			if len(tt.data) > 0 {
+				_, err := ds.Push(&ctx, &DatasourcePushRequest{
+					Inserts: tt.data,
+				})
+				if err != nil {
+					t.Fatalf("⛔️ failed to push test data: %v", err)
+				}
+			}
+
+			// Create temp file path
+			dir := t.TempDir()
+			parquetPath := filepath.Join(dir, "test.parquet")
+
+			// Get schema from first few rows
+			schema := map[string]reflect.Type{}
+			for _, rows := range tt.data[:int(min(5, float64(len(tt.data))))] {
+				for k, v := range rows {
+					schema[k] = reflect.TypeOf(v)
+				}
+			}
+
+			// Call SaveParquet
+			err := SaveParquet(&ctx, ds, parquetPath, tt.batchSize, schema)
+			if err != nil {
+				t.Fatalf("⛔️ SaveParquet failed: %v", err)
+			}
+
+			// Verify the file was created
+			if len(tt.data) == 0 {
+				// For empty datasource, file should exist (even if empty)
+				if _, err := os.Stat(parquetPath); err != nil {
+					t.Fatalf("⛔️ expected file to exist for empty datasource: %v", err)
+				}
+			} else {
+				// For non-empty datasource, verify file exists and has content
+				info, err := os.Stat(parquetPath)
+				if err != nil {
+					t.Fatalf("⛔️ failed to stat output file: %v", err)
+				}
+				if info.Size() == 0 {
+					t.Error("❌ got empty file, expected content")
+				}
+
+				// Try reading back the data using StreamReadParquet
+				resultChan, err := helpers.StreamReadParquet(parquetPath, 100)
+				if err != nil {
+					t.Fatalf("⛔️ failed to read back parquet file: %v", err)
+				}
+
+				// Collect all records
+				var allRecords []map[string]any
+				for batch := range resultChan {
+					allRecords = append(allRecords, batch...)
+				}
+
+				// Verify count
+				if len(allRecords) != len(tt.data) {
+					t.Errorf("❌ got %d records, want %d", len(allRecords), len(tt.data))
+				}
+
+				// Verify that all data was written (check by ID)
+				expectedIDs := make(map[string]bool)
+				for _, item := range tt.data {
+					// Convert ID to string for comparison
+					idStr := fmt.Sprint(item["id"])
+					expectedIDs[idStr] = true
+				}
+
+				actualIDs := make(map[string]bool)
+				for _, item := range allRecords {
+					idStr := fmt.Sprint(item["id"])
+					actualIDs[idStr] = true
+				}
+
+				for expectedID := range expectedIDs {
+					if !actualIDs[expectedID] {
+						t.Errorf("❌ missing expected ID: %q", expectedID)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSaveParquet_DatasourceErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("invalid file path", func(t *testing.T) {
+		t.Parallel()
+
+		ds := NewMemoryDatasource("test-error", "id")
+		defer ds.Close(&ctx)
+
+		// Add some data
+		_, err := ds.Push(&ctx, &DatasourcePushRequest{
+			Inserts: []map[string]any{{"id": "1", "name": "test"}},
+		})
+		if err != nil {
+			t.Fatalf("⛔️ failed to setup test data: %v", err)
+		}
+
+		// Try to save to invalid path
+		err = SaveParquet(&ctx, ds, "/invalid/path/file.parquet", 10, nil)
+		if err == nil {
+			t.Fatal("⛔️ expected error for invalid path, got nil")
+		}
+	})
+
+	t.Run("datasource fetch error simulation", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a mock datasource that returns errors on fetch
+		ds := &MockErrorDatasource{}
+		defer ds.Close(&ctx)
+
+		dir := t.TempDir()
+		parquetPath := filepath.Join(dir, "test.parquet")
+
+		err := SaveParquet(&ctx, ds, parquetPath, 5, nil)
+		if err == nil {
+			t.Fatal("⛔️ expected error from mock datasource, got nil")
+		}
+	})
+}
+
+func TestLoadParquet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name           string
+		data           []map[string]any
+		batchSize      uint64
+		expectedCounts map[string]int // For counting unique values
+	}{
+		{
+			name:      "basic Parquet with batch size 2",
+			batchSize: 2,
+			data: []map[string]any{
+				{"id": "1", "name": "Alice", "age": "30"},
+				{"id": "2", "name": "Bob", "age": "25"},
+				{"id": "3", "name": "Charlie", "age": "35"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+				"3": 1,
+			},
+		},
+		{
+			name:      "Parquet with batch size 1",
+			batchSize: 1,
+			data: []map[string]any{
+				{"id": "1", "x": "a", "y": "1"},
+				{"id": "2", "x": "b", "y": "2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+			},
+		},
+		{
+			name:      "batch size larger than data",
+			batchSize: 10,
+			data: []map[string]any{
+				{"id": "1", "col1": "val1", "col2": "val2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+			},
+		},
+		{
+			name:           "empty Parquet",
+			batchSize:      5,
+			data:           []map[string]any{},
+			expectedCounts: map[string]int{},
+		},
+		{
+			name:      "zero batch size defaults to 1",
+			batchSize: 0,
+			data: []map[string]any{
+				{"id": "1", "key": "item1", "value": "data1"},
+				{"id": "2", "key": "item2", "value": "data2"},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+			},
+		},
+		{
+			name:      "Parquet with various data types",
+			batchSize: 3,
+			data: []map[string]any{
+				{"id": "1", "text": "Hello, World!", "number": 123},
+				{"id": "2", "text": "test", "number": 456.78},
+				{"id": "3", "text": "data", "number": 789},
+			},
+			expectedCounts: map[string]int{
+				"1": 1,
+				"2": 1,
+				"3": 1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create temporary Parquet file using StreamWriteParquet
+			dir := t.TempDir()
+			parquetPath := filepath.Join(dir, "test.parquet")
+
+			if len(tt.data) > 0 {
+
+				// Get schema from first few rows
+				schema := map[string]reflect.Type{}
+				for _, rows := range tt.data[:int(min(5, float64(len(tt.data))))] {
+					for k, v := range rows {
+						schema[k] = reflect.TypeOf(v)
+					}
+				}
+
+				// Create channel and write data
+				dataChan := make(chan []map[string]any, 1)
+				dataChan <- tt.data
+				close(dataChan)
+
+				err := helpers.StreamWriteParquet(parquetPath, schema, dataChan)
+				if err != nil {
+					t.Fatalf("⛔️ failed to create test Parquet file: %v", err)
+				}
+
+			} else {
+				// Create empty file
+				file, err := os.Create(parquetPath)
+				if err != nil {
+					t.Fatalf("⛔️ failed to create empty test file: %v", err)
+				}
+				file.Close()
+			}
+
+			// Create memory datasource
+			ds := NewMemoryDatasource("test-load-parquet", "id")
+			defer ds.Close(&ctx)
+
+			// Call LoadParquet
+			err := LoadParquet(&ctx, ds, parquetPath, tt.batchSize)
+			if len(tt.data) == 0 {
+				// Empty file should not cause an error
+				if err != nil {
+					t.Logf("ℹ️ got error for empty file: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("⛔️ LoadParquet failed: %v", err)
+			}
+
+			// Verify the data was loaded correctly
+			result := ds.Fetch(&ctx, &DatasourceFetchRequest{})
+			if result.Err != nil {
+				t.Fatalf("⛔️ failed to fetch loaded data: %v", result.Err)
+			}
+
+			// Check total count
+			if len(result.Docs) != len(tt.data) {
+				t.Errorf("❌ got %d documents, want %d", len(result.Docs), len(tt.data))
+			}
+
+			// For validation, use count-based approach
+			if len(tt.expectedCounts) > 0 {
+				actualCounts := make(map[string]int)
+				for _, doc := range result.Docs {
+					// Count occurrences of id field values for verification
+					if idValue, ok := doc["id"].(string); ok {
+						if _, exists := tt.expectedCounts[idValue]; exists {
+							actualCounts[idValue]++
+						}
+					}
+				}
+
+				// Verify expected counts
+				for expectedKey, expectedCount := range tt.expectedCounts {
+					if actualCounts[expectedKey] != expectedCount {
+						t.Errorf("❌ expected %d occurrences of %q, got %d", expectedCount, expectedKey, actualCounts[expectedKey])
+					}
+				}
+			}
+
+			// Verify data structure for non-empty cases
+			if len(tt.data) > 0 && len(result.Docs) > 0 {
+				// Check that all expected fields are present in at least one document
+				expectedFields := make(map[string]bool)
+				for _, expectedDoc := range tt.data {
+					for field := range expectedDoc {
+						expectedFields[field] = true
+					}
+				}
+
+				actualFields := make(map[string]bool)
+				for _, actualDoc := range result.Docs {
+					for field := range actualDoc {
+						actualFields[field] = true
+					}
+				}
+
+				for expectedField := range expectedFields {
+					if !actualFields[expectedField] {
+						t.Errorf("❌ missing expected field %q in loaded data", expectedField)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadParquet_ErrorCases(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("non-existent file", func(t *testing.T) {
+		t.Parallel()
+
+		ds := NewMemoryDatasource("test-error", "id")
+		defer ds.Close(&ctx)
+
+		err := LoadParquet(&ctx, ds, "/non/existent/file.parquet", 10)
+		if err == nil {
+			t.Fatal("⛔️ expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("datasource push error", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temporary Parquet file with sample data
+		dir := t.TempDir()
+		parquetPath := filepath.Join(dir, "test.parquet")
+
+		schema := map[string]reflect.Type{
+			"id":   reflect.TypeOf(""),
+			"name": reflect.TypeOf(""),
+		}
+		data := []map[string]any{
+			{"id": "1", "name": "Alice"},
+			{"id": "2", "name": "Bob"},
+		}
+
+		dataChan := make(chan []map[string]any, 1)
+		dataChan <- data
+		close(dataChan)
+
+		err := helpers.StreamWriteParquet(parquetPath, schema, dataChan)
+		if err != nil {
+			t.Fatalf("⛔️ failed to create test Parquet file: %v", err)
+		}
+
+		// Use mock datasource that fails on push
+		ds := &MockErrorDatasource{}
+		defer ds.Close(&ctx)
+
+		err = LoadParquet(&ctx, ds, parquetPath, 2)
+		if err == nil {
+			t.Fatal("⛔️ expected error from mock datasource push, got nil")
 		}
 	})
 }

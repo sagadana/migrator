@@ -12,10 +12,6 @@ import (
 	"testing"
 )
 
-// -------------------
-// UTILS
-// -------------------
-
 // jobCall records one invocation of the user-supplied fn.
 type jobCall struct {
 	ID     uint64
@@ -165,135 +161,6 @@ func writeTempFile(t *testing.T, content string) string {
 		t.Fatalf("⛔️ failed to write temp file: %v", err)
 	}
 	return path
-}
-
-func TestStreamCSV(t *testing.T) {
-	t.Parallel()
-
-	// Helper to build CSV content from 2D array
-	toCSV := func(rows [][]string) string {
-		if len(rows) == 0 {
-			return ""
-		}
-		var s string
-		for i, row := range rows {
-			for j, col := range row {
-				if j > 0 {
-					s += ","
-				}
-				s += col
-			}
-			if i < len(rows)-1 {
-				s += "\n"
-			}
-		}
-		return s
-	}
-
-	tests := []struct {
-		name      string
-		content   string
-		batchSize uint64
-		want      [][]map[string]any
-		wantErr   bool
-	}{
-		{
-			name: "basic batching",
-			content: toCSV([][]string{
-				{"col1", "col2"},
-				{"a", "1"},
-				{"b", "2"},
-				{"c", "3"},
-			}),
-			batchSize: 2,
-			want: [][]map[string]any{
-				{
-					{"col1": "a", "col2": "1"},
-					{"col1": "b", "col2": "2"},
-				},
-				{
-					{"col1": "c", "col2": "3"},
-				},
-			},
-		},
-		{
-			name: "batchSize greater than total",
-			content: toCSV([][]string{
-				{"x", "y"},
-				{"u", "10"},
-				{"v", "20"},
-				{"w", "30"},
-			}),
-			batchSize: 10,
-			want: [][]map[string]any{
-				{
-					{"x": "u", "y": "10"},
-					{"x": "v", "y": "20"},
-					{"x": "w", "y": "30"},
-				},
-			},
-		},
-		{
-			name: "zero batchSize fallback to 1",
-			content: toCSV([][]string{
-				{"h1", "h2"},
-				{"a", "b"},
-				{"c", "d"},
-			}),
-			batchSize: 0,
-			want: [][]map[string]any{
-				{
-					{"h1": "a", "h2": "b"},
-				},
-				{
-					{"h1": "c", "h2": "d"},
-				},
-			},
-		},
-		{
-			name:      "empty file yields no batches",
-			content:   toCSV([][]string{{"h1", "h2"}}),
-			batchSize: 3,
-			want:      [][]map[string]any{},
-		},
-		{
-			name:    "nonexistent file returns error",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var path string
-			if tt.wantErr {
-				path = "no_such_file.csv"
-			} else {
-				path = writeTempFile(t, tt.content)
-			}
-
-			ch, err := StreamReadCSV(path, tt.batchSize)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("⛔️ expected error for path %q, got nil", path)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("⛔️ unexpected error: %v", err)
-			}
-
-			got := make([][]map[string]any, 0)
-			for batch := range ch {
-				got = append(got, batch)
-			}
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("❌ got %v, want %v", got, tt.want)
-			}
-		})
-	}
 }
 
 func TestExtractNumber(t *testing.T) {
@@ -592,6 +459,325 @@ func TestFlatten(t *testing.T) {
 	}
 }
 
+func TestMarshalModel(t *testing.T) {
+	t.Parallel()
+
+	type SimpleStruct struct {
+		Name  string `json:"name"`
+		Age   int    `json:"age"`
+		Email string `json:"email"`
+	}
+
+	type NestedStruct struct {
+		ID      int          `json:"id"`
+		Profile SimpleStruct `json:"profile"`
+		Tags    []string     `json:"tags"`
+	}
+
+	tests := []struct {
+		name      string
+		model     any
+		expected  map[string]any
+		wantError bool
+	}{
+		{
+			name: "SimpleStruct",
+			model: &SimpleStruct{
+				Name:  "John Doe",
+				Age:   30,
+				Email: "john@example.com",
+			},
+			expected: map[string]any{
+				"name":  "John Doe",
+				"age":   float64(30), // JSON numbers unmarshal to float64
+				"email": "john@example.com",
+			},
+			wantError: false,
+		},
+		{
+			name: "NestedStruct",
+			model: &NestedStruct{
+				ID: 1,
+				Profile: SimpleStruct{
+					Name:  "Jane Smith",
+					Age:   25,
+					Email: "jane@example.com",
+				},
+				Tags: []string{"developer", "golang"},
+			},
+			expected: map[string]any{
+				"id": float64(1),
+				"profile": map[string]any{
+					"name":  "Jane Smith",
+					"age":   float64(25),
+					"email": "jane@example.com",
+				},
+				"tags": []any{"developer", "golang"},
+			},
+			wantError: false,
+		},
+		{
+			name: "EmptyStruct",
+			model: &SimpleStruct{
+				Name:  "",
+				Age:   0,
+				Email: "",
+			},
+			expected: map[string]any{
+				"name":  "",
+				"age":   float64(0),
+				"email": "",
+			},
+			wantError: false,
+		},
+		{
+			name: "NilSliceInStruct",
+			model: &NestedStruct{
+				ID:      99,
+				Profile: SimpleStruct{Name: "Test"},
+				Tags:    nil,
+			},
+			expected: map[string]any{
+				"id": float64(99),
+				"profile": map[string]any{
+					"name":  "Test",
+					"age":   float64(0),
+					"email": "",
+				},
+				"tags": nil,
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var result map[string]any
+			var err error
+
+			switch v := tc.model.(type) {
+			case *SimpleStruct:
+				result, err = MarshalModel(v)
+			case *NestedStruct:
+				result, err = MarshalModel(v)
+			}
+
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("⛔️ expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("⛔️ unexpected error: %v", err)
+			}
+
+			if !reflect.DeepEqual(result, tc.expected) {
+				t.Errorf("❌ MarshalModel() = %#v; want %#v", result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestUnmarshalModel(t *testing.T) {
+	t.Parallel()
+
+	type SimpleStruct struct {
+		Name  string `json:"name"`
+		Age   int    `json:"age"`
+		Email string `json:"email"`
+	}
+
+	type NestedStruct struct {
+		ID      int          `json:"id"`
+		Profile SimpleStruct `json:"profile"`
+		Tags    []string     `json:"tags"`
+	}
+
+	tests := []struct {
+		name      string
+		data      map[string]any
+		checkFunc func(t *testing.T, result any)
+		wantError bool
+	}{
+		{
+			name: "SimpleStruct",
+			data: map[string]any{
+				"name":  "John Doe",
+				"age":   float64(30),
+				"email": "john@example.com",
+			},
+			checkFunc: func(t *testing.T, result any) {
+				model := result.(*SimpleStruct)
+				if model.Name != "John Doe" {
+					t.Errorf("❌ Name = %q; want %q", model.Name, "John Doe")
+				}
+				if model.Age != 30 {
+					t.Errorf("❌ Age = %d; want %d", model.Age, 30)
+				}
+				if model.Email != "john@example.com" {
+					t.Errorf("❌ Email = %q; want %q", model.Email, "john@example.com")
+				}
+			},
+			wantError: false,
+		},
+		{
+			name: "NestedStruct",
+			data: map[string]any{
+				"id": float64(1),
+				"profile": map[string]any{
+					"name":  "Jane Smith",
+					"age":   float64(25),
+					"email": "jane@example.com",
+				},
+				"tags": []any{"developer", "golang"},
+			},
+			checkFunc: func(t *testing.T, result any) {
+				model := result.(*NestedStruct)
+				if model.ID != 1 {
+					t.Errorf("❌ ID = %d; want %d", model.ID, 1)
+				}
+				if model.Profile.Name != "Jane Smith" {
+					t.Errorf("❌ Profile.Name = %q; want %q", model.Profile.Name, "Jane Smith")
+				}
+				if model.Profile.Age != 25 {
+					t.Errorf("❌ Profile.Age = %d; want %d", model.Profile.Age, 25)
+				}
+				if len(model.Tags) != 2 {
+					t.Errorf("❌ len(Tags) = %d; want %d", len(model.Tags), 2)
+				}
+				if model.Tags[0] != "developer" || model.Tags[1] != "golang" {
+					t.Errorf("❌ Tags = %v; want [developer golang]", model.Tags)
+				}
+			},
+			wantError: false,
+		},
+		{
+			name: "EmptyData",
+			data: map[string]any{},
+			checkFunc: func(t *testing.T, result any) {
+				model := result.(*SimpleStruct)
+				if model.Name != "" || model.Age != 0 || model.Email != "" {
+					t.Errorf("❌ expected zero values, got %+v", model)
+				}
+			},
+			wantError: false,
+		},
+		{
+			name: "PartialData",
+			data: map[string]any{
+				"name": "Partial User",
+			},
+			checkFunc: func(t *testing.T, result any) {
+				model := result.(*SimpleStruct)
+				if model.Name != "Partial User" {
+					t.Errorf("❌ Name = %q; want %q", model.Name, "Partial User")
+				}
+				if model.Age != 0 {
+					t.Errorf("❌ Age = %d; want %d", model.Age, 0)
+				}
+				if model.Email != "" {
+					t.Errorf("❌ Email = %q; want empty string", model.Email)
+				}
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var err error
+			var result any
+
+			// Determine which type to unmarshal to based on data structure
+			if _, hasProfile := tc.data["profile"]; hasProfile {
+				result, err = UnmarshalModel[NestedStruct](tc.data)
+			} else {
+				result, err = UnmarshalModel[SimpleStruct](tc.data)
+			}
+
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("⛔️ expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("⛔️ unexpected error: %v", err)
+			}
+
+			if result == nil {
+				t.Fatalf("⛔️ result is nil")
+			}
+
+			tc.checkFunc(t, result)
+		})
+	}
+}
+
+func TestMarshalUnmarshalRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	type TestStruct struct {
+		ID       int               `json:"id"`
+		Name     string            `json:"name"`
+		Active   bool              `json:"active"`
+		Score    float64           `json:"score"`
+		Tags     []string          `json:"tags"`
+		Metadata map[string]string `json:"metadata"`
+	}
+
+	original := &TestStruct{
+		ID:     42,
+		Name:   "Test Item",
+		Active: true,
+		Score:  98.5,
+		Tags:   []string{"important", "verified"},
+		Metadata: map[string]string{
+			"key1": "value1",
+			"key2": "value2",
+		},
+	}
+
+	// Marshal to map
+	marshaled, err := MarshalModel(original)
+	if err != nil {
+		t.Fatalf("⛔️ MarshalModel failed: %v", err)
+	}
+
+	// Unmarshal back to struct
+	unmarshaled, err := UnmarshalModel[TestStruct](marshaled)
+	if err != nil {
+		t.Fatalf("⛔️ UnmarshalModel failed: %v", err)
+	}
+
+	// Compare
+	if unmarshaled.ID != original.ID {
+		t.Errorf("❌ ID = %d; want %d", unmarshaled.ID, original.ID)
+	}
+	if unmarshaled.Name != original.Name {
+		t.Errorf("❌ Name = %q; want %q", unmarshaled.Name, original.Name)
+	}
+	if unmarshaled.Active != original.Active {
+		t.Errorf("❌ Active = %v; want %v", unmarshaled.Active, original.Active)
+	}
+	if unmarshaled.Score != original.Score {
+		t.Errorf("❌ Score = %f; want %f", unmarshaled.Score, original.Score)
+	}
+	if !reflect.DeepEqual(unmarshaled.Tags, original.Tags) {
+		t.Errorf("❌ Tags = %v; want %v", unmarshaled.Tags, original.Tags)
+	}
+	if !reflect.DeepEqual(unmarshaled.Metadata, original.Metadata) {
+		t.Errorf("❌ Metadata = %v; want %v", unmarshaled.Metadata, original.Metadata)
+	}
+}
+
 func TestSlice(t *testing.T) {
 	t.Parallel()
 
@@ -703,144 +889,5 @@ func TestSlice(t *testing.T) {
 				t.Errorf("Slice() end = %d; want %d", gotEnd, tc.wantEnd)
 			}
 		})
-	}
-}
-
-func TestStreamWriteCSV(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		headers     []string
-		data        [][]map[string]any
-		expectedCSV string
-		wantErr     bool
-	}{
-		{
-			name:    "basic single batch",
-			headers: []string{"id", "name", "age"},
-			data: [][]map[string]any{
-				{
-					{"id": "1", "name": "Alice", "age": 30},
-					{"id": "2", "name": "Bob", "age": 25},
-				},
-			},
-			expectedCSV: "id,name,age\n1,Alice,30\n2,Bob,25\n",
-		},
-		{
-			name:    "multiple batches",
-			headers: []string{"x", "y"},
-			data: [][]map[string]any{
-				{
-					{"x": "a", "y": "1"},
-				},
-				{
-					{"x": "b", "y": "2"},
-					{"x": "c", "y": "3"},
-				},
-			},
-			expectedCSV: "x,y\na,1\nb,2\nc,3\n",
-		},
-		{
-			name:    "missing fields filled with empty",
-			headers: []string{"col1", "col2", "col3"},
-			data: [][]map[string]any{
-				{
-					{"col1": "val1", "col3": "val3"}, // missing col2
-					{"col1": "val4", "col2": "val5", "col3": "val6"},
-				},
-			},
-			expectedCSV: "col1,col2,col3\nval1,,val3\nval4,val5,val6\n",
-		},
-		{
-			name:        "empty data with headers only",
-			headers:     []string{"h1", "h2"},
-			data:        [][]map[string]any{},
-			expectedCSV: "h1,h2\n",
-		},
-		{
-			name:    "numeric and boolean values",
-			headers: []string{"id", "score", "active"},
-			data: [][]map[string]any{
-				{
-					{"id": 1, "score": 95.5, "active": true},
-					{"id": 2, "score": 88, "active": false},
-				},
-			},
-			expectedCSV: "id,score,active\n1,95.5,true\n2,88,false\n",
-		},
-		{
-			name:    "empty headers",
-			headers: []string{},
-			data: [][]map[string]any{
-				{
-					{"ignored": "value"},
-				},
-			},
-			expectedCSV: "\n\n",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create temp directory and file path
-			dir := t.TempDir()
-			path := filepath.Join(dir, "test.csv")
-
-			// Create input channel
-			input := make(chan []map[string]any)
-
-			// Start StreamWriteCSV in goroutine
-			errCh := make(chan error, 1)
-			go func() {
-				defer close(errCh)
-				errCh <- StreamWriteCSV(path, tt.headers, input)
-			}()
-
-			// Send data batches
-			go func() {
-				defer close(input)
-				for _, batch := range tt.data {
-					input <- batch
-				}
-			}()
-
-			// Wait for completion
-			err := <-errCh
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("⛔️ expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("⛔️ unexpected error: %v", err)
-			}
-
-			// Read and verify the file
-			content, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("⛔️ failed to read output file: %v", err)
-			}
-
-			if string(content) != tt.expectedCSV {
-				t.Errorf("❌ got CSV content:\n%q\nwant:\n%q", string(content), tt.expectedCSV)
-			}
-		})
-	}
-}
-
-func TestStreamWriteCSV_InvalidPath(t *testing.T) {
-	t.Parallel()
-
-	// Test with invalid file path
-	input := make(chan []map[string]any)
-	close(input)
-
-	err := StreamWriteCSV("/invalid/path/that/does/not/exist.csv", []string{"h1"}, input)
-	if err == nil {
-		t.Fatal("⛔️ expected error for invalid path, got nil")
 	}
 }

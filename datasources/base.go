@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"time"
@@ -82,7 +83,8 @@ type DatasourceStreamResult struct {
 type DatasourceImportType string
 
 const (
-	DatasourceImportTypeCSV DatasourceImportType = "csv"
+	DatasourceImportTypeCSV     DatasourceImportType = "csv"
+	DatasourceImportTypeParquet DatasourceImportType = "parquet"
 )
 
 type DatasourceImportSource string
@@ -101,7 +103,8 @@ type DatasourceImportRequest struct {
 type DatasourceExportType string
 
 const (
-	DatasourceExportTypeCSV DatasourceExportType = "csv"
+	DatasourceExportTypeCSV     DatasourceExportType = "csv"
+	DatasourceExportTypeParquet DatasourceExportType = "parquet"
 )
 
 type DatasourceExportDestination string
@@ -257,6 +260,7 @@ func SaveCSV(
 	}
 
 	if len(firstBatch) > 0 {
+
 		// Collect all unique keys from first batch and sort them for consistent output
 		headerSet := make(map[string]bool)
 		var doc map[string]any
@@ -288,6 +292,145 @@ func SaveCSV(
 
 		// Use StreamWriteCSV to write the data
 		return helpers.StreamWriteCSV(path, headers, newDataChan)
+	}
+
+	// If no first batch, create empty file
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	file.Close()
+	return nil
+}
+
+// Load Parquet data into datasource
+func LoadParquet(
+	ctx *context.Context,
+	ds Datasource,
+	path string,
+	batchSize uint64,
+) error {
+	result, err := helpers.StreamReadParquet(path, batchSize)
+	if err != nil {
+		return err
+	}
+
+	for data := range result {
+		_, err = ds.Push(ctx, &DatasourcePushRequest{
+			Inserts: data,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Save datasource into Parquet
+func SaveParquet(
+	ctx *context.Context,
+	ds Datasource,
+	path string,
+	batchSize uint64,
+	fields map[string]reflect.Type,
+) error {
+	// Normalize batch size
+	batchSize = max(batchSize, 1)
+
+	// Create a channel to stream data batches
+	dataChan := make(chan []map[string]any)
+	errChan := make(chan error, 1)
+
+	// Start a goroutine to fetch data in batches and send to channel
+	go func() {
+		defer close(dataChan)
+		defer close(errChan)
+
+		var offset uint64 = 0
+		var result DatasourceFetchResult
+		for {
+			// Fetch batch
+			result = ds.Fetch(ctx, &DatasourceFetchRequest{
+				Size:   batchSize,
+				Offset: offset,
+			})
+
+			if result.Err != nil {
+				errChan <- fmt.Errorf("failed to fetch data at offset %d: %w", offset, result.Err)
+				return
+			}
+
+			if len(result.Docs) == 0 {
+				// No more data
+				break
+			}
+
+			// Send batch to channel
+			dataChan <- result.Docs
+
+			// Move to next batch
+			offset += uint64(len(result.Docs))
+
+			// If we got less than requested, we're at the end
+			if uint64(len(result.Docs)) < batchSize {
+				break
+			}
+		}
+	}()
+
+	// Check for errors first
+	select {
+	case err := <-errChan:
+		if err != nil {
+			return err
+		}
+	default:
+	}
+
+	// Determine headers from first batch
+	firstBatch := <-dataChan
+
+	// Check for errors after getting first batch
+	select {
+	case err := <-errChan:
+		if err != nil {
+			return err
+		}
+	default:
+	}
+
+	if len(firstBatch) > 0 {
+
+		// Auto-detect schema from first batch if not provided
+		// Note: This is a best-effort implementation and may not cover all edge cases.
+		// It is recommended to provide schema for consistent results.
+		if len(fields) == 0 {
+			fields = make(map[string]reflect.Type)
+			for _, doc := range firstBatch {
+				for key, value := range doc {
+					if value != nil {
+						fields[key] = reflect.TypeOf(value)
+					}
+				}
+			}
+		}
+
+		// Create new channel that includes the first batch
+		newDataChan := make(chan []map[string]any)
+		go func() {
+			defer close(newDataChan)
+			// Send first batch
+			newDataChan <- firstBatch
+			// Send remaining batches
+			var batch []map[string]any
+			for batch = range dataChan {
+				newDataChan <- batch
+			}
+		}()
+
+		// Use StreamWriteParquet to write the data
+		return helpers.StreamWriteParquet(path, fields, newDataChan)
 	}
 
 	// If no first batch, create empty file

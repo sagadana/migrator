@@ -3,9 +3,9 @@ package datasources
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/lib/pq"
+	"github.com/sagadana/migrator/helpers"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -248,36 +249,6 @@ func NewPostgresDatasource[T any](ctx *context.Context, config PostgresDatasourc
 	return ds
 }
 
-// Marshal GORM Model to map[string]any
-func (ds *PostgresDatasource[T]) MarshalModel(model *T) (map[string]any, error) {
-	data, err := json.Marshal(model)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// Unmarshal map[string]any to GORM Model
-func (ds *PostgresDatasource[T]) UnmarshalModel(data map[string]any) (*T, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result T
-	if err := json.Unmarshal(jsonData, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
-}
-
 func (ds *PostgresDatasource[T]) DB() *gorm.DB {
 	return ds.db
 }
@@ -379,7 +350,7 @@ func (ds *PostgresDatasource[T]) Fetch(ctx *context.Context, request *Datasource
 	var err error
 	docs := make([]map[string]any, len(results))
 	for i, result := range results {
-		doc, err = ds.MarshalModel(&result)
+		doc, err = helpers.MarshalModel[T](&result)
 		if err != nil {
 			return DatasourceFetchResult{
 				Err:  fmt.Errorf("postgres marshal error: %w", err),
@@ -447,7 +418,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				}
 				row = t
 			} else {
-				t, err := ds.UnmarshalModel(item)
+				t, err := helpers.UnmarshalModel[T](item)
 				if err != nil {
 					pushErr = fmt.Errorf("postgres insert unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
@@ -499,7 +470,7 @@ func (ds *PostgresDatasource[T]) Push(ctx *context.Context, request *DatasourceP
 				}
 				row = t
 			} else {
-				t, err := ds.UnmarshalModel(item)
+				t, err := helpers.UnmarshalModel[T](item)
 				if err != nil {
 					pushErr = fmt.Errorf("postgres update unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
@@ -671,6 +642,8 @@ func (ds *PostgresDatasource[T]) Import(ctx *context.Context, request Datasource
 	switch request.Type {
 	case DatasourceImportTypeCSV: // TODO: use postgres native COPY command
 		return LoadCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceImportTypeParquet:
+		return LoadParquet(ctx, ds, request.Location, request.BatchSize)
 	default:
 		return fmt.Errorf("unsupported import type: %s", request.Type)
 	}
@@ -681,6 +654,12 @@ func (ds *PostgresDatasource[T]) Export(ctx *context.Context, request Datasource
 	switch request.Type {
 	case DatasourceExportTypeCSV: // TODO: use postgres native COPY command
 		return SaveCSV(ctx, ds, request.Location, request.BatchSize)
+	case DatasourceExportTypeParquet:
+		fields := map[string]reflect.Type{}
+		for _, field := range ds.fieldMap {
+			fields[field.DBName] = field.FieldType
+		}
+		return SaveParquet(ctx, ds, request.Location, request.BatchSize, fields)
 	default:
 		return fmt.Errorf("unsupported export type: %s", request.Type)
 	}
