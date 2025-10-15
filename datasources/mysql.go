@@ -3,7 +3,6 @@ package datasources
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -16,6 +15,7 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/go-mysql-org/go-mysql/schema"
+	"github.com/sagadana/migrator/helpers"
 	mysqldriver "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -255,36 +255,6 @@ func NewMySQLDatasource[T any](ctx *context.Context, config MySQLDatasourceConfi
 	return ds
 }
 
-// Marshal GORM Model to map[string]any
-func (ds *MySQLDatasource[T]) MarshalModel(model *T) (map[string]any, error) {
-	data, err := json.Marshal(model)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// Unmarshal map[string]any to GORM Model
-func (ds *MySQLDatasource[T]) UnmarshalModel(data map[string]any) (*T, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result T
-	if err := json.Unmarshal(jsonData, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
-}
-
 func (ds *MySQLDatasource[T]) DB() *gorm.DB {
 	return ds.db
 }
@@ -386,7 +356,7 @@ func (ds *MySQLDatasource[T]) Fetch(ctx *context.Context, request *DatasourceFet
 	var err error
 	docs := make([]map[string]any, len(results))
 	for i, result := range results {
-		doc, err = ds.MarshalModel(&result)
+		doc, err = helpers.MarshalModel[T](&result)
 		if err != nil {
 			return DatasourceFetchResult{
 				Err:  fmt.Errorf("mysql marshal error: %w", err),
@@ -454,7 +424,7 @@ func (ds *MySQLDatasource[T]) Push(ctx *context.Context, request *DatasourcePush
 				}
 				row = t
 			} else {
-				t, err := ds.UnmarshalModel(item)
+				t, err := helpers.UnmarshalModel[T](item)
 				if err != nil {
 					pushErr = fmt.Errorf("mysql insert unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
@@ -505,7 +475,7 @@ func (ds *MySQLDatasource[T]) Push(ctx *context.Context, request *DatasourcePush
 				}
 				row = t
 			} else {
-				t, err := ds.UnmarshalModel(item)
+				t, err := helpers.UnmarshalModel[T](item)
 				if err != nil {
 					pushErr = fmt.Errorf("mysql update unmarshal error: %w", err)
 					slog.Warn(pushErr.Error())
