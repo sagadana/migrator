@@ -14,7 +14,7 @@
 <br/>
 
 <div align="start">
-High-performant, easy-to-use data replication tool. Replicate data from any source to any destination with ease (Homogeneous or Heterogeneous).
+High-performant, easy-to-use data migration and replication tool. Move data from any source to any destination with ease (Homogeneous or Heterogeneous).
 </div>
 
 ## Features
