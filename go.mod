@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/go-mysql-org/go-mysql v1.13.0
-	github.com/jackc/pglogrepl v0.0.0-20250509230407-a9884f6bd75a
+	github.com/jackc/pglogrepl v0.0.0-20260401131349-e37c41485510
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/lib/pq v1.10.9
 	github.com/parquet-go/parquet-go v0.25.1
@@ -53,8 +53,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
