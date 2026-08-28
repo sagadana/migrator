@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/go-mysql-org/go-mysql v1.13.0
-	github.com/jackc/pglogrepl v0.0.0-20260401131349-e37c41485510
+	github.com/jackc/pglogrepl v0.0.0-20260824121319-4ae5c490f7ce
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/lib/pq v1.12.3
 	github.com/parquet-go/parquet-go v0.25.1
